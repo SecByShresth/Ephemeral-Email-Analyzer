@@ -1,0 +1,40 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ABUSEIPDB_API_KEY="ABUSE IPDB API"
+      - VIRUSTOTAL_API_KEY="VIRUS TOTAL API"
+      - HYBRID_ANALYSIS_API_KEY="HYBRID ANALYSIS API"
+    volumes:
+      - ./backend:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+    networks:
+      - email-analysis-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    command: npm start
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      - REACT_APP_API_URL=http://192.168.1.9:8000
+      - CHOKIDAR_USEPOLLING=true
+    networks:
+      - email-analysis-network
+
+networks:
+  email-analysis-network:
+    external: false

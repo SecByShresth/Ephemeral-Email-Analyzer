@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+cachetools
+dnspython
+python-whois
+python-magic
+yara-python
+requests
+pydantic
+python-dotenv
+oletools
+pycryptodome
+email-validator
