@@ -1,0 +1,66 @@
+name: Email Analysis API
+
+on:
+  repository_dispatch:
+    types: [analyze_header, analyze_url, analyze_attachment]
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests dnspython python-whois python-magic yara-python
+      
+      - name: Run Analysis
+        env:
+          VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+          ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
+          ANALYSIS_TYPE: ${{ github.event.client_payload.analysis_type }}
+          ANALYSIS_DATA: ${{ github.event.client_payload.data }}
+          ANALYSIS_ID: ${{ github.event.client_payload.analysis_id }}
+        run: |
+          python .github/scripts/analyze.py
+      
+      - name: Create Ephemeral Gist
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GIST_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const results = fs.readFileSync('results.json', 'utf8');
+            const analysisId = '${{ github.event.client_payload.analysis_id }}';
+            
+            const gist = await github.rest.gists.create({
+              description: `Ephemeral - ${analysisId} - Auto-delete`,
+              public: false,
+              files: {
+                [`analysis.json`]: { content: results }
+              }
+            });
+            
+            const rawUrl = gist.data.files['analysis.json'].raw_url;
+            const gistId = gist.data.id;
+            
+            fs.writeFileSync('gist_info.json', JSON.stringify({
+              gist_id: gistId,
+              raw_url: rawUrl,
+              analysis_id: analysisId
+            }));
+      
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: gist-${{ github.event.client_payload.analysis_id }}
+          path: gist_info.json
+          retention-days: 1
