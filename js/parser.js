@@ -32,37 +32,40 @@ class EmailParser {
     static extractReceivedChain(headers) {
         let received = headers['received'] || [];
         if (!Array.isArray(received)) received = [received];
-        
-        return received.map(line => {
-            // Simple extraction: from [ip/host] by [host] with [proto] id [id]
+
+        // Reverse to get Origin -> Recipient order
+        // Headers are typically prepended, so the last one in the array (original bottom) is the first hop.
+        // But headers['received'] might be in top-to-bottom order as they appear in file.
+        // Let's assume standard parsing preserves order: Index 0 is Top (Recipient), Index N is Bottom (Origin).
+        // So we reverse it.
+        const chain = received.map(line => {
+            // Regex for IP: Standard IPv4 and IPv6 patterns
+            // Often format: from helo ([1.2.3.4]) or from [1.2.3.4] (helo [1.2.3.4])
+            const ipMatch = line.match(/\[(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]/) ||
+                line.match(/\[([a-fA-F0-9:]+)\]/);
+
+            // Extract 'from' and 'by'
             const fromMatch = line.match(/from\s+([^\s]+)/i);
             const byMatch = line.match(/by\s+([^\s]+)/i);
-            const withMatch = line.match(/with\s+([^\s]+)/i);
-            const idMatch = line.match(/id\s+([^\s]+)/i);
-            const forMatch = line.match(/for\s+([^\s]+)/i);
             const dateMatch = line.match(/;\s*(.+)$/);
-
-            // Extract IP from "from" part
-            const ipMatch = line.match(/\[(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]/);
 
             return {
                 raw: line,
                 from: fromMatch ? fromMatch[1] : null,
                 by: byMatch ? byMatch[1] : null,
-                with: withMatch ? withMatch[1] : null,
-                id: idMatch ? idMatch[1] : null,
-                for: forMatch ? forMatch[1] : null,
                 ip: ipMatch ? ipMatch[1] : null,
                 date: dateMatch ? new Date(dateMatch[1]) : null,
                 dateRaw: dateMatch ? dateMatch[1] : null
             };
-        });
+        }).reverse(); // Origin first
+
+        return chain;
     }
 
     static extractAuthResults(headers) {
         const authResults = headers['authentication-results'] || [];
         const results = Array.isArray(authResults) ? authResults : [authResults];
-        
+
         const extracted = {
             spf: null,
             dkim: [],
