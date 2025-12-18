@@ -18,6 +18,36 @@ class Analyzer {
         }
     }
 
+    // Helper: Full Domain Profile (DNS + Reputation)
+    async _getDomainProfile(domain) {
+        const profile = { domain: domain, dns: {}, reputation: null, risk: 'Unknown' };
+
+        // 1. DNS Recon (Parallel)
+        const dnsTypes = ['A', 'MX', 'TXT'];
+        const dnsPromises = dnsTypes.map(t => this.lookupDNS(domain, t));
+        const [a, mx, txt] = await Promise.all(dnsPromises);
+
+        profile.dns.a = a?.Answer?.map(x => x.data) || [];
+        profile.dns.mx = mx?.Answer?.map(x => x.data) || [];
+        profile.dns.txt = txt?.Answer?.map(x => x.data) || [];
+
+        // Parsing SPF/DMARC from TXT (simplified for profile)
+        profile.dns.spf = profile.dns.txt.find(t => t.includes('v=spf1')) || null;
+
+        // DMARC specific lookup
+        const dmarc = await this.lookupDNS(`_dmarc.${domain}`, 'TXT');
+        profile.dns.dmarc = dmarc?.Answer?.find(x => x.data.includes('v=DMARC1'))?.data || null;
+
+        // 2. Reputation
+        profile.reputation = await this.reputation.checkDomain(domain);
+
+        // 3. Risk Derivation
+        if (profile.reputation.vt.data?.malicious > 0) profile.risk = "High";
+        else if (profile.reputation.vt.status === 'analyzed') profile.risk = "Neutral (Clean)";
+
+        return profile;
+    }
+
     // Stage 1: Fast, Synchronous-like Analysis (Headers, Auth, Anomalies)
     async analyzeStatic(headers, compareHeaders = null) {
         const report = {
@@ -165,62 +195,81 @@ class Analyzer {
 
     // Stage 2: Reputation Enrichment
     async enrichReport(report) {
-        if (!report.infrastructure.ip) return report;
+        if (report.infrastructure.ip) {
+            const infraSection = { title: "Infrastructure Context", details: [], deduction: 0 };
+            const rep = await this.reputation.checkIP(report.infrastructure.ip);
 
-        const infraSection = { title: "Infrastructure Context", details: [], deduction: 0 };
-        const rep = await this.reputation.checkIP(report.infrastructure.ip);
+            // Update parsed infra data
+            report.infrastructure.asn = rep.asn;
+            report.infrastructure.isp = rep.isp;
+            report.infrastructure.country = rep.country;
 
-        // Update parsed infra data
-        report.infrastructure.asn = rep.asn;
-        report.infrastructure.isp = rep.isp;
-        report.infrastructure.country = rep.country;
+            infraSection.details.push(`Origin IP: ${report.infrastructure.ip}`);
+            infraSection.details.push(`ASN: ${rep.asn} | Org: ${rep.isp}`);
+            infraSection.details.push(`Country: ${rep.country}`);
 
-        infraSection.details.push(`Origin IP: ${report.infrastructure.ip}`);
-        infraSection.details.push(`ASN: ${rep.asn} | Org: ${rep.isp}`);
-        infraSection.details.push(`Country: ${rep.country}`);
-
-        // Scenarios
-        let riskLabel = "Neutral";
-
-        // VT Analysis
-        if (rep.vt.status === 'analyzed') {
-            const malicious = rep.vt.data.malicious;
-            infraSection.details.push(`VirusTotal: ${malicious} vendors flagged this IP.`);
-            if (malicious > 0) {
-                infraSection.deduction += (malicious * 10);
-                report.anomalies.push({ level: 'Critical', msg: `IP flagged by ${malicious} security vendors.` });
-                riskLabel = "High";
+            // Scenarios
+            let riskLabel = "Neutral";
+            if (rep.vt.status === 'analyzed') {
+                const malicious = rep.vt.data.malicious;
+                infraSection.details.push(`VirusTotal: ${malicious} vendors flagged this IP.`);
+                if (malicious > 0) {
+                    infraSection.deduction += (malicious * 10);
+                    report.anomalies.push({ level: 'Critical', msg: `Origin IP flagged by ${malicious} security vendors.` });
+                    riskLabel = "High";
+                }
+            } else if (rep.vt.status === 'no_key') {
+                infraSection.details.push("ℹ️ VirusTotal lookup skipped (No API Key).");
             }
-        } else if (rep.vt.status === 'no_key') {
-            infraSection.details.push("ℹ️ VirusTotal lookup skipped (No API Key).");
-        }
 
-        // AbuseIPDB Analysis
-        if (rep.abuse.status === 'analyzed') {
-            const score = rep.abuse.data.score;
-            infraSection.details.push(`AbuseIPDB Confidence: ${score}%`);
-            if (score > 50) {
-                infraSection.deduction += 30;
-                riskLabel = "High";
-            } else if (score > 20) {
-                infraSection.deduction += 10;
-                if (riskLabel !== "High") riskLabel = "Medium";
+            if (rep.abuse.status === 'analyzed') {
+                const score = rep.abuse.data.score;
+                infraSection.details.push(`AbuseIPDB Confidence: ${score}%`);
+                if (score > 50) {
+                    infraSection.deduction += 30;
+                    riskLabel = "High";
+                } else if (score > 20) {
+                    infraSection.deduction += 10;
+                    if (riskLabel !== "High") riskLabel = "Medium";
+                }
             }
+
+            report.sections.push(infraSection);
+            report.score = Math.max(0, report.score - infraSection.deduction);
+            report.infrastructure.risk = riskLabel;
         }
 
-        // Contextual Interpretation
-        const lowerIsp = (rep.isp || '').toLowerCase();
-        if (lowerIsp.includes('amazon') || lowerIsp.includes('google cloud') || lowerIsp.includes('microsoft corporation') || lowerIsp.includes('digitalocean')) {
-            infraSection.details.push("📝 Analyst Note: IP belongs to a major cloud provider. While legitimate, cloud IPs are often used for ephemeral relays.");
-        } else if (lowerIsp === 'unknown') {
-            infraSection.details.push("📝 Analyst Note: ISP identity could not be resolved.");
+        // 2. Sender Domain Context (NEW)
+        const from = report.rawHeaders['from'] || '';
+        const domain = from.match(/@([^>]+)/)?.[1];
+        if (domain) {
+            const domProfile = await this._getDomainProfile(domain);
+            const domSection = { title: "Sender Domain Profile", details: [], deduction: 0 };
+
+            domSection.details.push(`<strong>${domain}</strong>`);
+            domSection.details.push(`A Records: ${domProfile.dns.a.length > 0 ? domProfile.dns.a.join(', ') : 'None'}`);
+            domSection.details.push(`MX Records: ${domProfile.dns.mx.length > 0 ? domProfile.dns.mx.map(m => m.split(' ').pop()).join(', ') : 'None'}`);
+
+            if (domProfile.reputation.vt.data) {
+                const age = domProfile.reputation.vt.data.creation_date
+                    ? Math.floor((Date.now() / 1000 - domProfile.reputation.vt.data.creation_date) / 86400) + ' days'
+                    : 'Unknown';
+                domSection.details.push(`Domain Age: ${age}`);
+                if (domProfile.reputation.vt.data.malicious > 0) {
+                    domSection.details.push(`🔴 VirusTotal: ${domProfile.reputation.vt.data.malicious} detections`);
+                    domSection.deduction += 20;
+                } else {
+                    domSection.details.push(`🟢 VirusTotal: Clean`);
+                }
+            } else {
+                domSection.details.push(`⚪ Reputation: No Data`);
+            }
+
+            report.sections.push(domSection);
+            report.score = Math.max(0, report.score - domSection.deduction);
         }
 
-        report.sections.push(infraSection);
-        report.score = Math.max(0, report.score - infraSection.deduction);
-        report.infrastructure.risk = riskLabel;
         report.summary = this.generateSummary(report);
-
         return report;
     }
 
@@ -238,7 +287,6 @@ class Analyzer {
 
     performComparison(headers, compareHeaders) {
         const deviations = [];
-        // Comparison logic same as before...
         const chain1 = EmailParser.extractReceivedChain(headers);
         const chain2 = EmailParser.extractReceivedChain(compareHeaders);
         if (Math.abs(chain1.length - chain2.length) > 1) {
@@ -251,8 +299,10 @@ class Analyzer {
         const results = [];
         for (const ip of ips) {
             if (!ip.trim()) continue;
+            // Full reputation lookup
             const rep = await this.reputation.checkIP(ip.trim());
-            // Interpret result
+
+            // Derive risk but keep full details
             let risk = "Neutral";
             let details = rep.isp || 'Unknown ISP';
 
@@ -261,7 +311,12 @@ class Analyzer {
 
             if (rep.vt.status === 'no_key' && rep.abuse.status === 'no_key') risk = "Unknown (No Keys)";
 
-            results.push({ ip: ip.trim(), reputation: rep, risk: risk, details: details });
+            results.push({
+                type: 'IP',
+                value: ip.trim(),
+                data: rep,
+                risk: risk
+            });
         }
         return results;
     }
@@ -270,12 +325,14 @@ class Analyzer {
         const results = [];
         for (const d of domains) {
             if (!d.trim()) continue;
-            const rep = await this.reputation.checkDomain(d.trim());
-            let risk = "Neutral";
-            if (rep.vt.data?.malicious > 0) risk = "High";
-            if (rep.vt.status === 'no_key') risk = "Unknown (No Keys)";
-
-            results.push({ domain: d.trim(), reputation: rep, risk: risk });
+            // Full Profile lookup
+            const profile = await this._getDomainProfile(d.trim());
+            results.push({
+                type: 'Domain',
+                value: d.trim(),
+                data: profile,
+                risk: profile.risk
+            });
         }
         return results;
     }
