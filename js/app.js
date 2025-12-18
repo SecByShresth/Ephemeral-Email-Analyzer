@@ -1,10 +1,16 @@
 // App logic
 const reputation = new ReputationProvider();
 const analyzer = new Analyzer(reputation);
-const forensics = new FileForensics();
+let forensics = null;
 let currentReport = null;
 
 document.addEventListener('DOMContentLoaded', () => {
+    try {
+        forensics = new FileForensics();
+    } catch (e) {
+        console.error("Forensics Engine Init Failed:", e);
+    }
+
     // Config Panel
     const configBtn = document.getElementById('config-btn');
     const configPanel = document.getElementById('config-panel');
@@ -147,6 +153,16 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function analyzeFile(file) {
+    if (!forensics) {
+        return {
+            filename: file.name,
+            value: file.name,
+            type: 'Error',
+            risk: { level: 'Gray', flags: [] },
+            details: '<div style="color:red">Forensics Engine is unavailable. Check console/network logs.</div>'
+        };
+    }
+
     // 1. Static Analysis (Apex Engine)
     const analysis = await forensics.analyze(file);
 
