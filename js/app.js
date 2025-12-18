@@ -312,36 +312,80 @@ function displayStandaloneResults(title, results) {
     document.getElementById('total-score').innerText = '--';
     document.getElementById('analyst-summary').innerText = `Completed ${title} for ${results.length} items.`;
 
-    let html = `<div class="result-card">
-        <div class="card-header"><span class="card-title">${title} Results</span></div>
-        <div class="table-responsive">
-            <table>
-                <thead><tr><th>Target</th><th>Risk Assessment</th><th>Context / Reputation</th></tr></thead>
-                <tbody>`;
+    let html = '';
 
     results.forEach(res => {
-        const item = res.ip || res.domain || res.filename;
+        const item = res.value || res.ip || res.domain || res.filename;
         let riskIcon = '⚪';
-        if (res.risk === 'High') riskIcon = '🔴';
-        else if (res.risk === 'Medium') riskIcon = '🟠';
-        else if (res.risk === 'Low') riskIcon = '🟢';
+        let riskClass = 'badge-blue';
 
-        let context = res.details || '';
+        if (res.risk === 'High') { riskIcon = '🔴'; riskClass = 'badge-red'; }
+        else if (res.risk === 'Medium') { riskIcon = '🟠'; riskClass = 'badge-orange'; }
+        else if (res.risk === 'Low' || res.risk.includes('Clean') || res.risk.includes('Neutral')) { riskIcon = '🟢'; riskClass = 'badge-green'; }
 
-        // If not pre-calculated, derive it (legacy fallback)
-        if (!context) {
-            if (res.reputation) {
-                context = res.reputation.asn || res.reputation.registrar || 'No context available';
-            }
+        html += `<div class="result-card">
+            <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+                <span class="card-title">${item}</span>
+                <span class="badge ${riskClass}">${riskIcon} ${res.risk}</span>
+            </div>
+            <div style="font-size: 0.9rem; padding: 10px 0;">`;
+
+        // IP Specific Layout
+        if (res.type === 'IP') {
+            const rep = res.data;
+            html += `
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div>
+                    <strong>Identity:</strong><br>
+                    IP: ${res.value}<br>
+                    ASN: ${rep.asn || 'N/A'}<br>
+                    ISP: ${rep.isp || 'N/A'}<br>
+                    Country: ${rep.country || 'N/A'}
+                </div>
+                <div>
+                    <strong>Reputation Signals:</strong><br>
+                    VirusTotal: ${rep.vt.data?.malicious > 0 ? `🔴 ${rep.vt.data.malicious} detections` : '🟢 Clean/Unknown'}<br>
+                    AbuseIPDB: ${rep.abuse.data?.score > 0 ? `⚠️ ${rep.abuse.data.score}% confidence` : '🟢 0% confidence'}<br>
+                    <small>Last Reported: ${rep.abuse.data?.lastReportedAt || 'N/A'}</small>
+                </div>
+            </div>`;
+        }
+        // Domain Specific Layout
+        else if (res.type === 'Domain') {
+            const data = res.data;
+            html += `
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div>
+                    <strong>Context:</strong><br>
+                    Domain: ${res.value}<br>
+                    A Records: ${data.dns.a.length > 0 ? data.dns.a.length : '0'} found<br>
+                    MX Records: ${data.dns.mx.length > 0 ? data.dns.mx.length : '0'} found
+                </div>
+                <div>
+                    <strong>Reputation & Auth:</strong><br>
+                    VirusTotal: ${data.reputation.vt.data?.malicious > 0 ? `🔴 ${data.reputation.vt.data.malicious} detections` : '🟢 Clean'}<br>
+                    SPF Record: ${data.dns.spf ? '✅ Present' : '❌ Missing'}<br>
+                    DMARC Record: ${data.dns.dmarc ? '✅ Present' : '❌ Missing'}
+                </div>
+            </div>
+            <div style="margin-top:10px; border-top:1px solid #eee; padding-top:5px; font-size:0.8rem; color:#666;">
+                <strong>Authentciation & DNS Detail:</strong><br>
+                MX: ${data.dns.mx.map(m => m.split(' ').pop()).join(', ') || 'None'}<br>
+                TXT/SPF: ${data.dns.spf || 'None'}<br>
+                DMARC: ${data.dns.dmarc || 'None'}
+            </div>`;
+        }
+        // Attachment (File)
+        else if (res.filename) {
+            html += `<div style="padding:10px;">${res.details}</div>`;
+        }
+        // Fallback
+        else {
+            html += `<div>${res.details}</div>`;
         }
 
-        html += `<tr>
-            <td class="mono"><strong>${item}</strong></td>
-            <td>${riskIcon} ${res.risk}</td>
-            <td>${context}</td>
-        </tr>`;
+        html += `</div></div>`;
     });
 
-    html += `</tbody></table></div></div>`;
     document.getElementById('sections-wrapper').innerHTML = html;
 }
