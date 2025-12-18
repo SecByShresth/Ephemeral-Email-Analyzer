@@ -171,7 +171,6 @@ class FileForensics {
         return results;
     }
 
-
     calculateEntropy(bytes) {
         const freq = {};
         for (let b of bytes) freq[b] = (freq[b] || 0) + 1;
