@@ -359,73 +359,100 @@ function displayStandaloneResults(title, results) {
     let html = '';
 
     results.forEach(res => {
-        const item = res.value || res.ip || res.domain || res.filename;
-        let riskIcon = '⚪';
-        let riskClass = 'badge-blue';
+        // Handle simple file analysis which hasn't changed structure
+        if (res.filename) {
+            html += `<div class="result-card">
+                <div class="card-header"><span class="card-title">${res.filename}</span></div>
+                <div style="padding:10px;">${res.details}</div>
+            </div>`;
+            return;
+        }
 
-        if (res.risk === 'High') { riskIcon = '🔴'; riskClass = 'badge-red'; }
-        else if (res.risk === 'Medium') { riskIcon = '🟠'; riskClass = 'badge-orange'; }
-        else if (res.risk === 'Low' || res.risk.includes('Clean') || res.risk.includes('Neutral')) { riskIcon = '🟢'; riskClass = 'badge-green'; }
+        const risk = res.risk;
+        let riskColor = 'green';
+        let riskIcon = '🟢';
+        if (risk.level === 'Red') { riskColor = 'red'; riskIcon = '🔴'; }
+        else if (risk.level === 'Yellow') { riskColor = 'orange'; riskIcon = '🟡'; }
 
-        html += `<div class="result-card">
+        html += `<div class="result-card" style="border-left: 5px solid ${riskColor};">
             <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
-                <span class="card-title">${item}</span>
-                <span class="badge ${riskClass}">${riskIcon} ${res.risk}</span>
+                <span class="card-title" style="font-size:1.2em;">${res.value}</span>
+                <span class="badge" style="background:${riskColor}; color:white;">${riskIcon} ${risk.level.toUpperCase()} RISK</span>
             </div>
-            <div style="font-size: 0.9rem; padding: 10px 0;">`;
+            
+            <div style="padding:0 15px 15px 15px;">`;
 
-        // IP Specific Layout
+        // Render Flags if any
+        if (risk.flags && risk.flags.length > 0) {
+            html += `<div style="margin: 10px 0; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 4px;">
+                <strong>⚠️ Detection Flags:</strong>
+                <ul style="margin: 5px 0 0 20px; padding:0; color:${riskColor === 'red' ? '#ff6b6b' : '#feca57'};">
+                    ${risk.flags.map(f => `<li>${f}</li>`).join('')}
+                </ul>
+            </div>`;
+        } else {
+            html += `<div style="margin: 10px 0; padding: 10px; background: rgba(0,255,0,0.1); border-radius: 4px; color: #badc58;">
+                <strong>✅ Clean Identity:</strong> No immediate threat indicators found.
+            </div>`;
+        }
+
+        // IP Layout
         if (res.type === 'IP') {
-            const rep = res.data;
             html += `
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top:10px;">
                 <div>
-                    <strong>Identity:</strong><br>
-                    IP: ${res.value}<br>
-                    ASN: ${rep.asn || 'N/A'}<br>
-                    ISP: ${rep.isp || 'N/A'}<br>
-                    Country: ${rep.country || 'N/A'}
+                    <h4 style="border-bottom:1px solid #444; padding-bottom:5px; margin-bottom:10px;">A. Identity & Infrastructure</h4>
+                    <div style="font-size:0.9em; line-height:1.6;">
+                        <strong>ISP / Org:</strong> ${res.identity.isp}<br>
+                        <strong>ASN:</strong> ${res.identity.asn}<br>
+                        <strong>PTR Record:</strong> ${res.identity.ptr || 'None'} <br>
+                        <strong>Type:</strong> ${res.identity.version}
+                    </div>
                 </div>
                 <div>
-                    <strong>Reputation Signals:</strong><br>
-                    VirusTotal: ${rep.vt.data?.malicious > 0 ? `🔴 ${rep.vt.data.malicious} detections` : '🟢 Clean/Unknown'}<br>
-                    AbuseIPDB: ${rep.abuse.data?.score > 0 ? `⚠️ ${rep.abuse.data.score}% confidence` : '🟢 0% confidence'}<br>
-                    <small>Last Reported: ${rep.abuse.data?.lastReportedAt || 'N/A'}</small>
+                     <h4 style="border-bottom:1px solid #444; padding-bottom:5px; margin-bottom:10px;">B. Geolocation & Usage</h4>
+                     <div style="font-size:0.9em; line-height:1.6;">
+                        <strong>Location:</strong> ${res.geo.country}<br>
+                        <strong>Usage Type:</strong> ${res.geo.usage || 'Unknown'}<br>
+                        <strong>Abuse Score:</strong> ${res.risk.abuseScore}%<br>
+                        <strong>Blacklist:</strong> ${res.risk.blacklist}
+                     </div>
                 </div>
             </div>`;
         }
-        // Domain Specific Layout
-        else if (res.type === 'Domain') {
-            const data = res.data;
+
+        // Domain Layout
+        if (res.type === 'Domain') {
             html += `
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top:10px;">
                 <div>
-                    <strong>Context:</strong><br>
-                    Domain: ${res.value}<br>
-                    A Records: ${data.dns.a.length > 0 ? data.dns.a.length : '0'} found<br>
-                    MX Records: ${data.dns.mx.length > 0 ? data.dns.mx.length : '0'} found
+                    <h4 style="border-bottom:1px solid #444; padding-bottom:5px; margin-bottom:10px;">A. Identity (WHOIS)</h4>
+                    <div style="font-size:0.9em; line-height:1.6;">
+                        <strong>Registrar:</strong> ${res.identity.registrar}<br>
+                        <strong>Created:</strong> ${res.identity.created}<br>
+                        <strong>Age:</strong> ${res.identity.ageDays !== null ? res.identity.ageDays + ' days' : 'Unknown'}<br>
+                        <strong>Category:</strong> ${res.content.category}
+                    </div>
                 </div>
                 <div>
-                    <strong>Reputation & Auth:</strong><br>
-                    VirusTotal: ${data.reputation.vt.data?.malicious > 0 ? `🔴 ${data.reputation.vt.data.malicious} detections` : '🟢 Clean'}<br>
-                    SPF Record: ${data.dns.spf ? '✅ Present' : '❌ Missing'}<br>
-                    DMARC Record: ${data.dns.dmarc ? '✅ Present' : '❌ Missing'}
+                     <h4 style="border-bottom:1px solid #444; padding-bottom:5px; margin-bottom:10px;">B. Infrastructure (DNS)</h4>
+                     <div style="font-size:0.9em; line-height:1.6;">
+                        <strong>A Records:</strong> ${res.dns.a.length} IPs found<br>
+                        <strong>MX Records:</strong> ${res.dns.mx.length > 0 ? '✅ Present' : '❌ Missing'}<br>
+                        <strong>SPF:</strong> ${res.dns.spf ? '✅ Present' : '❌ Missing'}<br>
+                        <strong>DMARC:</strong> ${res.dns.dmarc ? '✅ Present' : '❌ Missing'}
+                     </div>
                 </div>
             </div>
-            <div style="margin-top:10px; border-top:1px solid #eee; padding-top:5px; font-size:0.8rem; color:#666;">
-                <strong>Authentication & DNS Detail:</strong><br>
-                MX: ${data.dns.mx.map(m => m.split(' ').pop()).join(', ') || 'None'}<br>
-                TXT/SPF: ${data.dns.spf || 'None'}<br>
-                DMARC: ${data.dns.dmarc || 'None'}
+            
+            <div style="margin-top:15px;">
+                 <h4 style="border-bottom:1px solid #444; padding-bottom:5px; margin-bottom:10px;">DNS Map</h4>
+                 <div style="background:#111; padding:10px; border-radius:4px; font-family:monospace; font-size:0.85em; color:#ccc;">
+                    NS: ${res.dns.ns.join(', ') || 'None'}<br>
+                    MX: ${res.dns.mx.map(m => m.split(' ').pop()).join(', ') || 'None'}<br>
+                    AAAA: ${res.dns.aaaa.join(', ') || 'None'}
+                 </div>
             </div>`;
-        }
-        // Attachment (File)
-        else if (res.filename) {
-            html += `<div style="padding:10px;">${res.details}</div>`;
-        }
-        // Fallback
-        else {
-            html += `<div>${res.details}</div>`;
         }
 
         html += `</div></div>`;
