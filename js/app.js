@@ -1,6 +1,7 @@
 // App logic
 const reputation = new ReputationProvider();
 const analyzer = new Analyzer(reputation);
+const forensics = new FileForensics();
 let currentReport = null;
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -146,37 +147,95 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function analyzeFile(file) {
-    const buffer = await file.arrayBuffer();
-    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    // 1. Static Analysis (Apex Engine)
+    const analysis = await forensics.analyze(file);
 
-    const rep = await reputation.checkHash(hashHex);
+    // 2. Reputation Check (VT)
+    const rep = await reputation.checkHash(analysis.meta.sha256);
 
-    let risk = "Neutral";
-    let details = "No reputation data";
+    let finalRisk = analysis.risk.level;
+    let extraFlags = [];
+    let intelHtml = '';
 
+    // Intel & Fallback Logic
     if (rep.status === 'analyzed') {
         const malicious = rep.data.malicious;
+        const total = rep.data.total || 70;
         if (malicious > 0) {
-            risk = "High";
-            details = `Flagged by ${malicious} vendors on VirusTotal`;
+            finalRisk = 'Red';
+            extraFlags.push(`🚩 VirusTotal: ${malicious}/${total} engines flagged this`);
+            intelHtml = `<div style="color:#ff6b6b">Result: <strong>${malicious}/${total}</strong> engines flagged as Malicious.</div>`;
         } else {
-            details = "Hash known to VT, no malicious flags";
+            intelHtml = `<div style="color:green">Result: Clean (0/${total} detections).</div>`;
         }
-    } else if (rep.status === 'no_key') {
-        risk = "Unknown (No API Key)";
-        details = "Reputation check skipped";
+    } else {
+        // Silent Fallback / Manual
+        intelHtml = `
+            <div>Source: <strong>VirusTotal (via Fallback)</strong></div>
+            <div style="margin-top:5px; color:orange;">⚠️ API Unreachable or Limit Reached.</div>
+            <div style="margin-top:5px;">
+                <a href="https://www.virustotal.com/gui/file/${analysis.meta.sha256}" target="_blank" class="fallback-link" style="background:#333; padding:2px 8px; border-radius:4px; text-decoration:none; font-size:0.8em; color:white;">🔍 check_virustotal</a>
+                <a href="https://opentip.kaspersky.com/${analysis.meta.sha256}" target="_blank" class="fallback-link" style="background:#333; padding:2px 8px; border-radius:4px; text-decoration:none; font-size:0.8em; color:white;">🔍 check_kaspersky</a>
+            </div>
+        `;
+        extraFlags.push('⚠️ Reputation unknown (Manual Check Required)');
     }
 
+    // Build Output HTML (Apex Style)
+    // Combined Strings
+    const s = analysis.forensics.strings;
+    let stringHtml = '';
+    if (s.urls.length || s.ips.length || s.emails.length || s.commands.length) {
+        stringHtml = `<div style="margin-top:15px; border-top:1px dashed #555; paddingTop:10px;">
+            <strong>[+] EXTRACTED STRINGS (High Value):</strong>
+            <ul style="margin:5px 0 0 20px; font-size:0.85em; color:#ccc;">
+                ${s.commands.map(x => `<li style="color:#ff9ff3">CMD: ${x}</li>`).join('')}
+                ${s.urls.map(x => `<li>URL: ${x}</li>`).join('')}
+                ${s.ips.map(x => `<li>IP: ${x}</li>`).join('')}
+                ${s.emails.map(x => `<li>EMAIL: ${x}</li>`).join('')}
+            </ul>
+        </div>`;
+    } else {
+        stringHtml = `<div style="margin-top:15px; color:#777;">[+] EXTRACTED STRINGS: None found (Clean)</div>`;
+    }
+
+    let details = `
+    <div style="font-family:monospace; font-size:0.9em;">
+        <div style="margin-bottom:15px; padding-bottom:10px; border-bottom:1px solid #444;">
+            <strong>[*] ANALYZING:</strong> ${analysis.meta.filename}<br>
+            <span style="color:#777;">Type: ${analysis.type.real} | SHA256: ${analysis.meta.sha256.substring(0, 16)}...</span>
+        </div>
+
+        <div style="margin-bottom:15px;">
+             <strong>[+] YARA HITS:</strong>
+             ${analysis.forensics.yara.length === 0 ? '<br><span style="color:green; margin-left:20px;">No threats detected.</span>' :
+            `<ul style="margin-top:5px; padding-left:20px;">
+                ${analysis.forensics.yara.map(h => {
+                let c = h.level === 'Critical' ? 'red' : h.level === 'High' ? 'orange' : 'gold';
+                return `<li style="color:${c}">🚩 ${h.rule} (Severity: ${h.level})</li>`;
+            }).join('')}
+             </ul>`}
+        </div>
+
+        <div style="margin-bottom:15px;">
+             <strong>[+] INTEL REPUTATION:</strong>
+             <div style="margin-left:20px; margin-top:5px;">
+                ${intelHtml}
+             </div>
+        </div>
+
+        ${stringHtml}
+    </div>`;
+
     return {
-        filename: file.name,
-        size: (file.size / 1024).toFixed(2) + ' KB',
-        type: file.type || 'unknown',
-        hash: hashHex,
-        reputation: rep.data,
-        risk: risk,
-        details: `${details}<br><span style="font-size:0.7em">SHA256: ${hashHex.substring(0, 16)}...</span>`
+        filename: analysis.meta.filename,
+        value: analysis.meta.filename,
+        type: 'Attachment',
+        risk: {
+            level: finalRisk,
+            flags: [...analysis.risk.flags, ...extraFlags]
+        },
+        details: details
     };
 }
 
