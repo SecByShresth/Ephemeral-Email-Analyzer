@@ -17,10 +17,10 @@ document.addEventListener('DOMContentLoaded', () => {
         configPanel.classList.toggle('hidden');
     });
 
-    document.getElementById('save-keys-btn').addEventListener('click', () => {
+    saveKeysBtn.addEventListener('click', () => {
         reputation.setKeys(vtInput.value, abuseInput.value);
         configPanel.classList.add('hidden');
-        alert('API keys saved to browser storage.');
+        alert('API keys loaded for this session. They will be discarded on refresh.');
     });
 
     // Tab switching
@@ -118,11 +118,14 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.getElementById('clear-btn').addEventListener('click', () => {
-        if (confirm('Are you sure you want to clear all data? This cannot be undone.')) {
+        if (confirm('Are you sure you want to clear all data? This will also wipe your API keys for this session.')) {
             document.getElementById('header-input').value = '';
             document.getElementById('ip-input').value = '';
             document.getElementById('domain-input').value = '';
             document.getElementById('results-container').style.display = 'none';
+            reputation.setKeys('', '');
+            vtInput.value = '';
+            abuseInput.value = '';
             currentReport = null;
         }
     });
