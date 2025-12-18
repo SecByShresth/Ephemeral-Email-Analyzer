@@ -231,7 +231,45 @@ function displayReport(report, isPartial = false) {
         </div>`;
     }
 
-    // Auth & Infrastructure Sections
+    // Infrastructure & Path Section
+    if (report.infrastructure && report.infrastructure.path) {
+        html += `<div class="result-card">
+            <div class="card-header"><span class="card-title">Infrastructure Path Analysis</span></div>`;
+
+        // Path Table
+        html += `<div class="table-responsive"><table>
+            <thead><tr><th>Hop</th><th>IP / Host</th><th>Role</th><th>Status</th></tr></thead>
+            <tbody>`;
+
+        report.infrastructure.path.forEach((hop, i) => {
+            let statusIcon = '🟢'; // Default transit
+            if (hop.role.includes('True Origin')) statusIcon = '🔎';
+            else if (hop.isInternal) statusIcon = '🔒';
+
+            html += `<tr>
+                <td style="color:#666;">${i + 1}</td>
+                <td class="mono">${hop.ip || 'Unknown IP'}<br><span style="font-size:0.7em; color:#888;">${hop.by || ''}</span></td>
+                <td><span class="badge ${hop.role.includes('Origin') ? 'badge-blue' : ''}">${hop.role}</span></td>
+                <td>${statusIcon}</td>
+            </tr>`;
+        });
+        html += `</tbody></table></div>`;
+
+        // Enrichment Details (ASN/Country)
+        if (report.infrastructure.asn !== 'N/A') {
+            html += `<div style="margin-top:15px; padding-top:10px; border-top:1px solid #eee;">
+                <strong>Origin Context:</strong><br>
+                ASN: ${report.infrastructure.asn}<br>
+                ISP: ${report.infrastructure.isp}<br>
+                Country: ${report.infrastructure.country}<br>
+                Risk Assessment: <strong>${report.infrastructure.risk}</strong>
+            </div>`;
+        }
+
+        html += `</div>`;
+    }
+
+    // Other Sections (Auth, etc)
     if (report.sections && report.sections.length > 0) {
         report.sections.forEach(sec => {
             html += `<div class="result-card">
