@@ -1,0 +1,27 @@
+name: Cleanup Ephemeral Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      gist_id:
+        description: 'Gist ID to delete'
+        required: true
+        type: string
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete Gist
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GIST_TOKEN }}
+          script: |
+            try {
+              await github.rest.gists.delete({
+                gist_id: '${{ github.event.inputs.gist_id }}'
+              });
+              console.log('Gist deleted');
+            } catch (error) {
+              console.log('Cleanup failed:', error.message);
+            }
