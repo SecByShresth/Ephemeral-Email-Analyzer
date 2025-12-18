@@ -17,7 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
         configPanel.classList.toggle('hidden');
     });
 
-    saveKeysBtn.addEventListener('click', () => {
+    document.getElementById('save-keys-btn').addEventListener('click', () => {
         reputation.setKeys(vtInput.value, abuseInput.value);
         configPanel.classList.add('hidden');
         alert('API keys loaded for this session. They will be discarded on refresh.');
@@ -195,6 +195,19 @@ function displayReport(report) {
             <div class="card-header"><span class="card-title" style="color: green;">Baseline match</span></div>
             <p>No structural deviations detected compared to legitimate sample.</p>
         </div>`;
+    }
+
+    // Auth & Infrastructure Sections
+    if (report.sections && report.sections.length > 0) {
+        report.sections.forEach(sec => {
+            html += `<div class="result-card">
+                <div class="card-header"><span class="card-title">${sec.title}</span></div>
+                <div style="font-size: 0.85rem;">
+                    ${sec.details.map(d => `<div style="margin-bottom: 5px;">${d}</div>`).join('')}
+                </div>
+                ${sec.deduction > 0 ? `<div style="color: grey; font-size: 0.7rem; margin-top: 10px;">Scoring impact: -${sec.deduction} points</div>` : ''}
+            </div>`;
+        });
     }
 
     // Header Table Section
