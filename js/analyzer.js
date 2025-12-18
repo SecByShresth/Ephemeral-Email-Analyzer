@@ -141,51 +141,73 @@ class Analyzer {
 
     // Stage 2: Enrichment (Threat Intel)
     async enrichReport(report) {
-        // --- MODULE 3: Threat Intelligence (Async) ---
-        // 1. IP Reputation
-        const originIp = report.modules.infrastructure.data.originIp;
-        if (originIp) {
-            const rep = await this.reputation.checkIP(originIp);
-            report.modules.threatIntel.data.originReputation = rep;
+        // --- PREPARATION: Extract Entities ---
+        const hops = report.modules.infrastructure.data.hops || [];
+        // Filter for Public IPs only for analysis to save API quota
+        const publicIps = [
+            ...new Set(hops
+                .map(h => h.ip)
+                .filter(ip => ip && !ip.startsWith('10.') && !ip.startsWith('192.168.') && !ip.startsWith('127.')) // Simple private filter
+            )
+        ];
 
-            // Analyze Rep
-            if (rep.vt.status === 'analyzed' && rep.vt.data.malicious > 0) {
-                report.riskScore -= (rep.vt.data.malicious * 5); // -5 per vendor
-                report.modules.threatIntel.issues.push({ level: 'Critical', msg: `Origin IP flagged by ${rep.vt.data.malicious} vendors.` });
-                report.riskScore -= 15; // Specific penalty requested
-            }
-
-            // ASN Context
-            if (rep.isp && (rep.isp.includes('Google') || rep.isp.includes('Amazon'))) {
-                // report.modules.threatIntel.issues.push({ level: 'Info', msg: 'Origin is a major cloud provider.' });
-            }
-        }
-
-        // 2. Domain Reputation & Age
+        // Extract Sender Domain
         const from = report.rawHeaders['from'] || '';
-        const domain = from.match(/@([^>]+)/)?.[1];
-        if (domain) {
-            const domRep = await this._getDomainProfile(domain);
-            report.modules.threatIntel.data.senderDomain = domRep;
+        const domain = from.match(/@([^>]+)/)?.[1]; // Basic extraction
 
-            if (domRep.dns.a.length === 0) {
-                report.riskScore -= 10;
-                report.modules.threatIntel.issues.push({ level: 'High', msg: `Sender Domain ${domain} has no A records (Unresolvable).` });
-            }
+        // --- EXECUTION: Automated Sub-Analysis ---
+        const [ipResults, domainResults] = await Promise.all([
+            publicIps.length > 0 ? this.analyzeIPs(publicIps) : [],
+            domain ? this.analyzeDomains([domain]) : []
+        ]);
 
-            // Check Age
-            if (domRep.ageDays !== null && domRep.ageDays < 7) {
-                report.riskScore -= 10;
-                report.modules.threatIntel.issues.push({ level: 'High', msg: `Domain is less than 1 week old (${domRep.ageDays} days).` });
-            } else if (domRep.ageDays !== null && domRep.ageDays < 30) {
-                report.riskScore -= 5;
-                report.modules.threatIntel.issues.push({ level: 'Medium', msg: `Domain is less than 30 days old.` });
+        // --- INTEGRATION: Attach Results ---
+        report.enriched = {
+            ips: ipResults,
+            domain: domainResults[0] || null
+        };
+
+        // --- UPDATE MODULES WITH NEW INTEL ---
+
+        // 1. Update Infrastructure with IP Intelligence
+        // Map detailed results back to hops
+        report.modules.infrastructure.data.hops = hops.map(hop => {
+            const analysis = ipResults.find(r => r.value === hop.ip);
+            if (analysis) {
+                hop.reputation = {
+                    score: analysis.risk.score,
+                    status: analysis.risk.level, // Red, Yellow, Green, Gray
+                    flags: analysis.risk.flags,
+                    isp: analysis.identity.isp
+                };
             }
+            return hop;
+        });
+
+        // 2. Update Risk Score based on Deep Analysis
+        let totalPenalty = 0;
+
+        // IP Penalties
+        ipResults.forEach(ip => {
+            if (ip.risk.level === 'Red') totalPenalty += 20;
+            if (ip.risk.level === 'Yellow') totalPenalty += 5;
+        });
+
+        // Domain Penalties
+        if (report.enriched.domain) {
+            const d = report.enriched.domain;
+            report.modules.threatIntel.data.senderDomain = d; // Sync to module
+
+            if (d.risk.level === 'Red') totalPenalty += 30;
+            if (d.risk.level === 'Yellow') totalPenalty += 10;
         }
 
-        // Final Score Clamp
+        report.riskScore -= totalPenalty;
+
+        // Final Score Clamp & Summary
         report.riskScore = Math.max(0, Math.min(100, report.riskScore));
         report.summary = this.generateSummary(report.riskScore);
+
         return report;
     }
 
@@ -259,25 +281,56 @@ class Analyzer {
                 }
             };
 
-            // 3. Risk Logic (Traffic Light)
-            // Baseline deduction
-            if (analysis.risk.abuseScore > 0) analysis.risk.score += analysis.risk.abuseScore;
-            if (rep.vt.data?.malicious > 0) analysis.risk.score += (rep.vt.data.malicious * 10);
+            // 3. Risk Logic
+            let dataMissing = false;
 
-            // Usage Type Analysis
-            const usage = (analysis.geo.usage || '').toLowerCase();
-            if (usage.includes('business') || usage.includes('data center')) {
-                analysis.risk.flags.push('Data Center/Business IP (Potential Bot/VPN)');
-                analysis.risk.score += 20;
-            } else if (usage.includes('residential')) {
-                analysis.risk.flags.push('Residential IP (Likely User Device)');
+            // Check if APIs actually ran
+            if (rep.vt.status !== 'analyzed' && rep.abuse.status !== 'analyzed') {
+                dataMissing = true;
+                analysis.risk.level = 'Gray';
+                analysis.risk.flags.push('Reputation data unavailable (Check API Keys / CORS)');
+            } else {
+                // We have at least some data
+
+                // AbuseIPDB Check
+                if (rep.abuse.status === 'analyzed') {
+                    if (analysis.risk.abuseScore > 0) analysis.risk.score += analysis.risk.abuseScore;
+                } else {
+                    analysis.risk.flags.push('AbuseIPDB lookup failed');
+                }
+
+                // VirusTotal Check
+                if (rep.vt.status === 'analyzed') {
+                    if (rep.vt.data.malicious > 0) analysis.risk.score += (rep.vt.data.malicious * 10);
+                } else {
+                    // Don't flag VT failure loudly as it might be common (CORS), but don't assume clean
+                }
+
+                // Usage Penalties
+                const usage = (analysis.geo.usage || '').toLowerCase();
+                if (usage.includes('business') || usage.includes('data center')) {
+                    analysis.risk.flags.push('Data Center/Business IP (Potential Bot/VPN)');
+                    analysis.risk.score += 20;
+                } else if (usage.includes('residential')) {
+                    analysis.risk.flags.push('Residential IP (Likely User Device)');
+                }
+
+                // Traffic Light Thresholds
+                if (analysis.risk.score >= 50 || (rep.vt.data && rep.vt.data.malicious > 0)) {
+                    analysis.risk.level = 'Red';
+                } else if (analysis.risk.score >= 20 || usage.includes('vpn')) {
+                    analysis.risk.level = 'Yellow';
+                }
             }
 
-            // Thresholds
-            if (analysis.risk.score >= 50 || rep.vt.data?.malicious > 0) {
-                analysis.risk.level = 'Red';
-            } else if (analysis.risk.score >= 20 || usage.includes('vpn')) {
-                analysis.risk.level = 'Yellow';
+            // Fallback for visual "Clean" verification
+            if (analysis.risk.level === 'Green' && analysis.risk.score === 0) {
+                if (rep.abuse.status === 'analyzed' || rep.vt.status === 'analyzed') {
+                    // Effectively confirm it is truly clean
+                } else {
+                    // Should be caught by dataMissing, but double safe
+                    analysis.risk.level = 'Gray';
+                }
             }
 
             analysis.data = rep; // Keep raw data
