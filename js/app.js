@@ -192,119 +192,109 @@ function updateLoading(msg) {
     document.getElementById('analyst-summary').innerText = msg;
 }
 
+
+function renderIssues(issues) {
+    if (!issues || issues.length === 0) return '<div style="color:green; margin-bottom:10px;">✅ No Issues Detected</div>';
+    return issues.map(i => {
+        let color = 'gold';
+        if (i.level === 'Critical' || i.level === 'Red') color = 'red';
+        else if (i.level === 'High' || i.level === 'Orange') color = 'orange';
+        return `<div style="background: rgba(255,255,255,0.05); padding:5px; border-left: 3px solid ${color}; margin-bottom:5px;">
+            <strong>${i.level}:</strong> ${i.msg}
+        </div>`;
+    }).join('');
+}
+
 function displayReport(report, isPartial = false) {
     document.getElementById('total-score').innerText = report.riskScore;
     document.getElementById('analyst-summary').innerText = report.summary;
 
     let html = '';
 
-    // --- RENDER MODULES ---
-
-    // 1. Identity & Spoofing
-    const modId = report.modules.identity;
+    // --- 1. Email Summary ---
     html += `<div class="result-card">
-        <div class="card-header"><span class="card-title">1. Identity & Spoofing</span></div>
+        <div class="card-header"><span class="card-title">1. Email Summary</span></div>
         <div style="padding:10px;">
-            ${renderIssues(modId.issues)}
-            <div style="margin-top:10px; display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
-                <div>
-                    <strong>Authentication:</strong><br>
-                    SPF: ${modId.data.auth?.spf || 'None'} ${modId.data.auth?.spf === 'pass' ? '✅' : '❌'}<br>
-                    DKIM: ${modId.data.auth?.dkim?.join(', ') || 'None'} ${modId.data.auth?.dkim?.includes('pass') ? '✅' : '❌'}<br>
-                    DMARC: ${modId.data.auth?.dmarc || 'None'}
-                </div>
-            </div>
+            <strong>Subject:</strong> ${report.rawHeaders['subject'] || 'N/A'}<br>
+            <strong>From:</strong> ${report.rawHeaders['from'] || 'N/A'}<br>
+            <strong>To:</strong> ${report.rawHeaders['to'] || 'N/A'}
         </div>
     </div>`;
 
-    // 2. Infrastructure & Routing (MS Style + Reputation)
-    const modInfra = report.modules.infrastructure;
-    html += `<div class="result-card">
-        <div class="card-header"><span class="card-title">2. Infrastructure & Routing</span></div>
-        <div style="padding:10px;">
-            ${renderIssues(modInfra.issues)}
-            <p><strong>Total Hops:</strong> ${modInfra.data.hops.length}</p>
-            
-            <div class="table-responsive">
-                <table>
-                    <thead><tr><th>Hop</th><th>Delay</th><th>From (Sending)</th><th>By (Receiving)</th><th>IP / Reputation</th></tr></thead>
-                    <tbody>
-                        ${modInfra.data.hops.map(h => {
-        // Highlight origin
-        let ipStyle = '';
-        if (h.role === 'True Origin (First Public)') ipStyle = 'font-weight:bold; color:#0af;';
+    // --- 2. Security Intelligence (IPs) ---
+    const hops = report.modules.infrastructure.data.hops || [];
+    const publicHops = hops.filter(h => h.reputation); // Only show ones we analyzed
 
-        return `<tr>
-                            <td>${h.number}</td>
-                            <td>${h.delay ? h.delay + 's' : '-'}</td>
-                            <td class="mono">${h.from || ''}</td>
-                            <td class="mono">${h.by || ''}</td>
-                            <td class="mono" style="${ipStyle}">${h.ip || ''}</td>
-                        </tr>`}).join('')}
+    html += `<div class="result-card">
+        <div class="card-header"><span class="card-title">2. Security Intelligence (IP Reputation)</span></div>
+        <div style="padding:10px;">
+            ${publicHops.length === 0 ? 'No public IPs analyzing yet...' :
+            `<div class="table-responsive">
+                <table>
+                    <thead><tr><th>IP Address</th><th>ISP / Org</th><th>Risk Score</th><th>Status</th></tr></thead>
+                    <tbody>
+                        ${publicHops.map(h => {
+                let statusIcon = '⚪';
+                let color = 'grey';
+                if (h.reputation.status === 'Red') { statusIcon = '🔴'; color = 'red'; }
+                else if (h.reputation.status === 'Yellow') { statusIcon = '🟡'; color = 'orange'; }
+                else if (h.reputation.status === 'Green') { statusIcon = '🟢'; color = 'green'; }
+
+                // Handle Fallback / Manual
+                let statusText = h.reputation.status;
+                if (h.reputation.status === 'Gray') statusText = 'Unknown (Manual Check)';
+
+                return `<tr>
+                                <td class="mono">${h.ip}</td>
+                                <td>${h.reputation.isp || 'Unknown'}</td>
+                                <td>${h.reputation.score}/100</td>
+                                <td style="color:${color}; font-weight:bold;">${statusIcon} ${statusText}</td>
+                            </tr>`;
+            }).join('')}
                     </tbody>
                 </table>
-            </div>
-            <div style="margin-top:10px;">
-                 <strong>True Origin IP:</strong> ${modInfra.data.originIp || 'Unknown'}
-            </div>
+            </div>`}
         </div>
     </div>`;
 
-    // 3. Threat Intelligence
-    const modThreat = report.modules.threatIntel;
-    html += `<div class="result-card">
-        <div class="card-header"><span class="card-title">3. Threat Intelligence</span></div>
-        <div style="padding:10px;">
-            ${renderIssues(modThreat.issues)}
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
+    // --- 3. Domain Health ---
+    const dom = report.modules.threatIntel.data.senderDomain; // Now synced in Analyzer
+    if (dom) {
+        let ageRisk = 'Green';
+        if (dom.risk && dom.risk.level === 'Red') ageRisk = 'Red';
+        else if (dom.risk && dom.risk.level === 'Yellow') ageRisk = 'Yellow'; // Normalize
+
+        html += `<div class="result-card">
+            <div class="card-header"><span class="card-title">3. Domain Health (${dom.domain})</span></div>
+            <div style="padding:10px; display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
                 <div>
-                    <strong>Origin IP Reputation:</strong><br>
-                    ${renderReputation(modThreat.data.originReputation)}
+                    <strong>Forensics:</strong><br>
+                    Age: <span style="color:${dom.identity.ageDays < 30 ? 'red' : 'inherit'}">${dom.identity.ageDays !== null ? dom.identity.ageDays + ' days' : 'Unknown'}</span><br>
+                    Registrar: ${dom.identity.registrar}<br>
+                    Created: ${dom.identity.created}
                 </div>
                 <div>
-                    <strong>Sender Domain Profile:</strong><br>
-                    ${renderDomainProfile(modThreat.data.senderDomain)}
+                     <strong>Security:</strong><br>
+                     MX Records: ${dom.dns.mx.length > 0 ? '✅ Valid' : '❌ Missing'}<br>
+                     SPF/DMARC: ${dom.dns.spf ? '✅' : '❌'} / ${dom.dns.dmarc ? '✅' : '❌'}<br>
+                     Category: ${dom.content.category}
                 </div>
             </div>
-        </div>
-    </div>`;
+             ${dom.risk && dom.risk.flags.length > 0 ? `<div style="margin-top:10px; padding:10px; background:rgba(255,0,0,0.1);"><strong>⚠️ Flags:</strong> ${dom.risk.flags.join(', ')}</div>` : ''}
+        </div>`;
+    }
 
-    // 4 & 5. Content & Vendor
-    const modContent = report.modules.content;
-    const modVendor = report.modules.vendor;
+    // --- 4. Raw Headers (Standard) ---
     html += `<div class="result-card">
-        <div class="card-header"><span class="card-title">4. Content & Vendor Specs</span></div>
-        <div style="padding:10px; display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
-            <div>
-                 <strong>Content Metadata:</strong><br>
-                 MIME: ${modContent.data.mime}<br>
-                 Encoding: ${modContent.data.encoding || 'Standard'}<br>
-                 Attachments: ${modContent.data.hasAttachments ? 'Yes 📎' : 'No'}
-            </div>
-            <div>
-                 <strong>Vendor Headers:</strong><br>
-                 Microsoft SCL: ${modVendor.data.microsoft || 'N/A'}<br>
-                 Google DKIM: ${modVendor.data.google || 'N/A'}
-            </div>
-        </div>
-    </div>`;
-
-    // Headers Table
-    html += `<div class="result-card">
-        <div class="card-header"><span class="card-title">Raw Headers</span></div>
+        <div class="card-header"><span class="card-title">4. Raw Headers</span></div>
         <div class="table-responsive" style="max-height: 400px; overflow-y:auto;">
             <table>
                 <thead><tr><th>Header</th><th>Value</th></tr></thead>
                 <tbody>
                 ${Object.keys(report.rawHeaders).map(k => {
         let val = report.rawHeaders[k];
-        if (Array.isArray(val)) val = val.join('<br>'); // Handle array headers
-
-        // Safe truncation for rendering massive headers
-        const displayVal = val.length > 300
-            ? `<div style="max-width:500px; overflow-wrap:anywhere;">${val}</div>`
-            : val;
-
+        if (Array.isArray(val)) val = val.join('<br>');
+        const displayVal = val.length > 300 ? `<div style="max-width:500px; overflow-wrap:anywhere;">${val}</div>` : val;
         return `<tr><td style="width:150px;">${k}</td><td class="mono">${displayVal}</td></tr>`;
     }).join('')}
                 </tbody>
@@ -315,42 +305,13 @@ function displayReport(report, isPartial = false) {
     document.getElementById('sections-wrapper').innerHTML = html;
 
     if (isPartial) {
-        document.getElementById('analyst-summary').innerHTML += ' <br><em>...enriching with Threat Intel...</em>';
+        document.getElementById('analyst-summary').innerHTML += ' <br><em>...running automated deep analysis on IPs & Domain...</em>';
     }
 }
 
-function renderIssues(issues) {
-    if (!issues || issues.length === 0) return '<div style="color:green; margin-bottom:10px;">✅ No Issues Detected</div>';
-    return issues.map(i => {
-        let color = 'gold';
-        if (i.level === 'Critical') color = 'red';
-        else if (i.level === 'High') color = 'orange';
-        return `<div style="background: rgba(255,255,255,0.05); padding:5px; border-left: 3px solid ${color}; margin-bottom:5px;">
-            <strong>${i.level}:</strong> ${i.msg}
-        </div>`;
-    }).join('');
-}
+function renderReputation(rep) { return ''; } // Deprecated used inline now
 
-function renderReputation(rep) {
-    if (!rep) return "Pending...";
-    const vt = rep.vt.data?.malicious;
-    return `
-    ASN: ${rep.asn || 'N/A'}<br>
-    ISP: ${rep.isp || 'N/A'}<br>
-    Country: ${rep.country || 'N/A'}<br>
-    VirusTotal: ${vt !== undefined ? (vt > 0 ? `🔴 ${vt} Detections` : '🟢 Clean') : 'N/A'}
-    `;
-}
-
-function renderDomainProfile(prof) {
-    if (!prof) return "Pending...";
-    return `
-    Domain: ${prof.domain}<br>
-    Age: ${prof.ageDays !== null ? prof.ageDays + ' days' : 'Unknown'}<br>
-    MX Records: ${prof.dns.mx.length}<br>
-    VirusTotal: ${prof.reputation?.vt?.data?.malicious > 0 ? '🔴 Malicious' : '🟢 Clean'}
-    `;
-}
+function renderDomainProfile(prof) { return ''; } // Deprecated
 
 function displayStandaloneResults(title, results) {
     document.getElementById('total-score').innerText = '--';
@@ -371,13 +332,20 @@ function displayStandaloneResults(title, results) {
         const risk = res.risk;
         let riskColor = 'green';
         let riskIcon = '🟢';
+        let riskText = risk.level.toUpperCase();
+
         if (risk.level === 'Red') { riskColor = 'red'; riskIcon = '🔴'; }
         else if (risk.level === 'Yellow') { riskColor = 'orange'; riskIcon = '🟡'; }
+        else if (risk.level === 'Gray') {
+            riskColor = '#7f8c8d';
+            riskIcon = '⚪';
+            riskText = 'UNKNOWN (MANUAL CHECK)';
+        }
 
         html += `<div class="result-card" style="border-left: 5px solid ${riskColor};">
             <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
                 <span class="card-title" style="font-size:1.2em;">${res.value}</span>
-                <span class="badge" style="background:${riskColor}; color:white;">${riskIcon} ${risk.level.toUpperCase()} RISK</span>
+                <span class="badge" style="background:${riskColor}; color:white;">${riskIcon} ${riskText} RISK</span>
             </div>
             
             <div style="padding:0 15px 15px 15px;">`;
