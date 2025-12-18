@@ -26,6 +26,9 @@ class Analyzer {
             rawHeaders: headers
         };
 
+        const from = headers['from'] || '';
+        const returnPath = headers['return-path'] || '';
+
         // 1. Authentication Analysis
         const authData = EmailParser.extractAuthResults(headers);
         const authSection = {
@@ -94,6 +97,7 @@ class Analyzer {
             authSection.deduction += 15;
             report.anomalies.push({ level: 'Medium', msg: "Missing DMARC Policy" });
         }
+        report.sections.push(authSection);
 
         // 2. Header Anomaly Detection
         const internalIps = ['127.0.0.1', '10.', '172.16.', '192.168.'];
@@ -119,8 +123,6 @@ class Analyzer {
         });
 
         // Sender Alignment
-        const from = headers['from'] || '';
-        const returnPath = headers['return-path'] || '';
         if (from && returnPath && !from.includes(returnPath.replace(/[<>]/g, ''))) {
             report.anomalies.push({ level: 'Medium', msg: "From / Return-Path Mismatch" });
         }
@@ -140,6 +142,7 @@ class Analyzer {
             }
             infraSection.details.push(`Primary Relay IP: ${mainIp} (${rep.asn || 'Unknown ASN'})`);
         }
+        report.sections.push(infraSection);
 
         // 4. Comparison Mode
         if (compareHeaders) {
