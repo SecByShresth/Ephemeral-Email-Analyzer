@@ -22,111 +22,142 @@ class Analyzer {
     async analyzeStatic(headers, compareHeaders = null) {
         const report = {
             timestamp: new Date().toISOString(),
-            score: 0, // Calculated later
+            score: 0,
             sections: [],
             anomalies: [],
             summary: "",
             comparison: null,
             rawHeaders: headers,
-            infrastructure: { ip: null, asn: null, isp: null, country: null, risk: 'Unknown' }
+            infrastructure: {
+                ip: null,
+                path: [],
+                asn: 'N/A',
+                isp: 'N/A',
+                country: 'N/A',
+                risk: 'Unknown'
+            }
         };
 
         const from = headers['from'] || '';
         const returnPath = headers['return-path'] || '';
+        const receivedChain = EmailParser.extractReceivedChain(headers); // [Origin ... Recipient]
 
-        // 1. Authentication Analysis
+        // 1. Path Analysis & True Origin Detection
+        const internalIps = /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|fc00:|fe80:)/;
+        let originHop = null;
+
+        // Path Classification
+        report.infrastructure.path = receivedChain.map((hop, i) => {
+            const isInternal = hop.ip ? internalIps.test(hop.ip) : false;
+            let role = 'Transit';
+
+            if (i === 0) role = 'Origin (Claimed)';
+            if (i === receivedChain.length - 1) role = 'Recipient MX';
+
+            // Heuristic for True Origin: First Public IP
+            if (!originHop && hop.ip && !isInternal) {
+                originHop = hop;
+                role = 'True Origin (First Public)';
+            }
+
+            return { ...hop, role: role, isInternal: isInternal };
+        });
+
+        // Fallback if no public IP found (internal only chain)
+        if (!originHop && receivedChain.length > 0) originHop = receivedChain[0];
+
+        // Set Main IP for Enrichment
+        report.infrastructure.ip = originHop ? originHop.ip : null;
+
+        // 2. Authentication Analysis (Strict)
         const authData = EmailParser.extractAuthResults(headers);
         const authSection = { title: "Authentication Quality", details: [], weight: 40, deduction: 0 };
 
-        // DNS Checks (Async but fast)
-        const fromDomain = from.match(/@([^>]+)/)?.[1];
-        if (fromDomain) {
-            // SPF
-            const spfRecord = await this.lookupDNS(fromDomain, 'TXT');
-            if (spfRecord && spfRecord.Answer) {
-                const record = spfRecord.Answer.find(a => a.data.includes('v=spf1'))?.data;
-                if (record) {
-                    authSection.details.push(`SPF Policy: ${record}`);
-                    if (record.includes('-all')) authSection.details.push("✅ SPF is strict (-all)");
-                    else if (record.includes('~all')) authSection.details.push("ℹ️ SPF is soft (~all)");
-                    else authSection.details.push("⚠️ SPF is neutral/wide (+all/?all)");
-                }
-            } else {
-                authSection.details.push("ℹ️ No SPF TXT record found via DNS.");
-            }
-
-            // DMARC
-            const dmarcRecord = await this.lookupDNS(`_dmarc.${fromDomain}`, 'TXT');
-            if (dmarcRecord && dmarcRecord.Answer) {
-                const record = dmarcRecord.Answer.find(a => a.data.includes('v=DMARC1'))?.data;
-                if (record) {
-                    authSection.details.push(`DMARC Record: ${record}`);
-                    if (record.includes('p=reject')) authSection.details.push("✅ DMARC enforcement: REJECT");
-                    else if (record.includes('p=quarantine')) authSection.details.push("✅ DMARC enforcement: QUARANTINE");
-                    else {
-                        authSection.details.push("⚠️ DMARC enforcement: NONE (Monitoring only)");
-                        authSection.deduction += 10;
-                    }
-                }
-            } else {
-                authSection.details.push("⚠️ No DMARC record found.");
-                authSection.deduction += 10;
-            }
-        }
-
-        // Header SPF/DKIM Results
+        // Header Results (Trust but Verify)
         if (authData.spf) {
-            authSection.details.push(`SPF Header Result: ${authData.spf}`);
+            authSection.details.push(`SPF Header: ${authData.spf}`);
             if (authData.spf !== 'pass') {
                 authSection.deduction += 20;
-                report.anomalies.push({ level: 'High', msg: `SPF Check Failed: ${authData.spf}` });
+                report.anomalies.push({ level: 'High', msg: `SPF Header Failed: ${authData.spf}` });
             }
         } else {
-            authSection.details.push("⚠️ No SPF-Result header found.");
+            authSection.details.push("⚠️ No SPF-Result header.");
+            authSection.deduction += 10;
         }
 
         if (authData.dkim.length > 0) {
-            authSection.details.push(`DKIM Signatures: ${authData.dkim.length} present`);
-            if (authData.dkim.some(d => d !== 'pass')) {
-                authSection.details.push("⚠️ Some DKIM signatures failed verification.");
+            authSection.details.push(`DKIM Signatures: ${authData.dkim.length} found`);
+            if (!authData.dkim.some(d => d === 'pass')) {
                 authSection.deduction += 10;
+                report.anomalies.push({ level: 'Medium', msg: "DKIM Verification Failed" });
             }
         } else {
-            authSection.details.push("ℹ️ No DKIM-Signature found.");
+            authSection.details.push("⚠️ No DKIM-Signature found.");
+            authSection.deduction += 10;
+        }
+
+        // DNS-based Auth Checks (Async)
+        const fromDomain = from.match(/@([^>]+)/)?.[1];
+        if (fromDomain) {
+            // SPF Record Check
+            const spfRecord = await this.lookupDNS(fromDomain, 'TXT');
+            let spfFound = false;
+            if (spfRecord && spfRecord.Answer) {
+                const record = spfRecord.Answer.find(a => a.data.includes('v=spf1'))?.data;
+                if (record) {
+                    spfFound = true;
+                    authSection.details.push(`SPF Policy: ${record}`);
+                    if (record.includes('+all') || record.includes('?all')) {
+                        authSection.details.push("⚠️ Weak SPF Policy (+all/?all)");
+                        authSection.deduction += 10;
+                    }
+                }
+            }
+            if (!spfFound) {
+                authSection.details.push("🔴 No SPF TXT record found.");
+                authSection.deduction += 20;
+            }
+
+            // DMARC Record Check
+            const dmarcRecord = await this.lookupDNS(`_dmarc.${fromDomain}`, 'TXT');
+            let dmarcFound = false;
+            if (dmarcRecord && dmarcRecord.Answer) {
+                const record = dmarcRecord.Answer.find(a => a.data.includes('v=DMARC1'))?.data;
+                if (record) {
+                    dmarcFound = true;
+                    authSection.details.push(`DMARC Policy: ${record}`);
+                    if (record.includes('p=none')) {
+                        authSection.details.push("⚠️ DMARC Policy is NONE (No enforcement)");
+                        authSection.deduction += 10;
+                    }
+                    if (record.includes('p=reject') || record.includes('p=quarantine')) {
+                        authSection.details.push("✅ DMARC Enforcement Active");
+                    }
+                }
+            }
+            if (!dmarcFound) {
+                authSection.details.push("🔴 No DMARC Record found.");
+                authSection.deduction += 15;
+            }
         }
 
         report.sections.push(authSection);
 
-        // 2. Anomaly Detection
-        const receivedChain = EmailParser.extractReceivedChain(headers);
-        let lastDate = null;
-        receivedChain.forEach((hop, index) => {
-            if (hop.date && lastDate) {
-                if (Math.abs(hop.date - lastDate) > 600000) { // 10 mins
-                    report.anomalies.push({ level: 'Low', msg: `Delay of >10 mins at hop ${index}` });
-                }
-            }
-            lastDate = hop.date;
-        });
-
+        // 3. Sender Alignment
         if (from && returnPath) {
             const fromClean = from.replace(/.*<|>/g, '').trim();
             const rpClean = returnPath.replace(/.*<|>/g, '').trim();
             if (!fromClean.includes(rpClean) && !rpClean.includes(fromClean)) {
-                // report.anomalies.push({ level: 'Medium', msg: `From (${fromClean}) != Return-Path (${rpClean})` });
+                // report.anomalies.push({ level: 'Medium', msg: `Mismatch: From <${fromClean}> vs Return-Path <${rpClean}>` });
             }
         }
 
-        // Comparison
+        // 4. Comparison
         if (compareHeaders) {
             report.comparison = this.performComparison(headers, compareHeaders);
         }
 
-        // Prep Infrastructure Data
-        const mainIp = receivedChain[0]?.ip;
-        report.infrastructure.ip = mainIp;
-
-        // Initial Score (Base 100 - Auth Deductions - Anomaly Deductions)
+        // Initial Score
         report.score = Math.max(0, 100 - authSection.deduction - (report.anomalies.length * 5));
 
         return report;
