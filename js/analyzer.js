@@ -415,15 +415,20 @@ class Analyzer {
                 }
             });
 
-            // Rep
-            if (profile.reputation.vt.data?.malicious > 0) {
-                analysis.risk.level = 'Red';
-                analysis.risk.flags.push(`Flagged by ${profile.reputation.vt.data.malicious} vendors`);
-            }
-
-            if (analysis.content.category === 'Uncategorized') {
-                analysis.risk.flags.push('Uncategorized Content');
-                if (analysis.risk.level === 'Green') analysis.risk.level = 'Yellow';
+            // Rep Check (VT)
+            if (profile.reputation.vt.status === 'analyzed') {
+                if (profile.reputation.vt.data?.malicious > 0) {
+                    analysis.risk.level = 'Red';
+                    analysis.risk.flags.push(`Flagged by ${profile.reputation.vt.data.malicious} vendors`);
+                }
+                if (analysis.content.category === 'Uncategorized') {
+                    analysis.risk.flags.push('Uncategorized Content');
+                    if (analysis.risk.level === 'Green') analysis.risk.level = 'Yellow';
+                }
+            } else {
+                // API Data Missing
+                analysis.risk.level = 'Gray';
+                analysis.risk.flags.push('Reputation data unavailable (Check API Keys / CORS)');
             }
 
             analysis.data = profile;
