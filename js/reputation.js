@@ -1,14 +1,12 @@
 class ReputationProvider {
     constructor() {
-        this.vtKey = localStorage.getItem('vt_key') || '';
-        this.abuseKey = localStorage.getItem('abuse_key') || '';
+        this.vtKey = '';
+        this.abuseKey = '';
     }
 
     setKeys(vt, abuse) {
         this.vtKey = vt;
         this.abuseKey = abuse;
-        localStorage.setItem('vt_key', vt);
-        localStorage.setItem('abuse_key', abuse);
     }
 
     async checkIP(ip) {
