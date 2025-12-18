@@ -1,148 +1,41 @@
-**📧 Ephemeral Email Header & Attachment Analysis Tool**
-
-A **full-stack security analysis platform** to analyze email headers, URLs, IPs, domains, and file attachments in real-time.
-
-It integrates with VirusTotal, AbuseIPDB, WHOIS, and YARA rules to detect suspicious or malicious indicators.
-
-The project comes with:
-
-🔹 **Backend** (FastAPI) for analysis & integrations
-
-🔹 **Frontend** (React + Tailwind) for a clean dashboard UI
-
-🔹 **Docker Compose** for easy deployment
-
-All results are **ephemeral** – stored only in-memory (default TTL: 15 minutes).
-
-**✨ Features**
-
-**🔍 Email Header Analysis**
-
-Extracts public IPs, domains, and mail authentication results (SPF, DKIM, DMARC).
-
-Detects routing anomalies & suspicious metadata.
-
-**🌐 URL & Domain Analysis**
-
-URL normalization & parsing.
-
-WHOIS lookup, DNS resolution (A/MX).
-
-Reputation checks with VirusTotal.
-
-**📡 IP Analysis**
-
-AbuseIPDB confidence scoring.
-
-VirusTotal IP reputation.
-
-Detects public vs private IPs.
-
-**📎 File Attachment Analysis**
-
-File type detection via python-magic.
-
-YARA scanning for malware families.
-
-Hashing (MD5/SHA1/SHA256).
-
-VirusTotal hash lookup & live scan submission.
-
-Entropy analysis for obfuscation.
-
-**📺 Dashboard & Logs**
-
-Modern React dashboard with tables/cards.
-
-WebSocket live logs while analysis runs.
-
-Results auto-expire after TTL.
-
-**🛠️ Tech Stack**
-
-Backend: FastAPI, cachetools, yara-python, python-whois, dnspython, python-magic
-
-Frontend: React, Tailwind, ShadCN UI, WebSockets
-
-Integrations: VirusTotal API, AbuseIPDB API
-
-Deployment: Docker, Docker Compose
-
-**🚀 Getting Started**
-
-**1️⃣ Clone the repository**
-
-git clone https://github.com/your-org/ephemeral-email-analyzer.git
-
-cd ephemeral-email-analyzer
-
-**2️⃣ Environment setup**
-Copy .env.example → .env and set API keys:
-
-VIRUSTOTAL_API_KEY=your_key
-
-ABUSEIPDB_API_KEY=your_key
-
-**3️⃣ Run with Docker Compose**
-
-docker-compose up --build
-
-Frontend → http://localhost:3000
-
-Backend → http://localhost:8000
-
-**4️⃣ API Endpoints (Backend)**
-
-GET /health → Service health
-
-POST /analyze/header → Analyze email headers
-
-POST /analyze/url → Analyze suspicious URLs
-
-POST /analyze/attachment → Analyze uploaded files
-
-GET /results/{analysis_id} → Get analysis results
-
-DELETE /results/{analysis_id} → Clear results
-
-WS /ws/{analysis_id} → Real-time log stream
-
-**📊 Example Workflow**
-
-Upload email headers → /analyze/header
-
-System extracts IOCs → runs WHOIS, DNS, VirusTotal, AbuseIPDB checks
-
-Upload suspicious file → /analyze/attachment
-
-Watch real-time logs → ws://localhost:8000/ws/{analysis_id}
-
-Fetch results → /results/{analysis_id}
-
-
-**⚠️ Notes & Limitations**
-
-Ephemeral Storage → All results expire after 15 minutes.
-
-Rate Limits → VirusTotal/AbuseIPDB APIs may throttle requests.
-
-File Size → VT file uploads >32MB not supported.
-
-Security → Never hardcode API keys in code.
-
-**📄 License**
-
-MIT License – free to use, modify, and distribute.
-
-**🤝 Contributing**
-
-Pull requests & feature suggestions welcome!
-
-Planned improvements:
-
-Redis cache backend for scale
-
-Sandbox integration (Cuckoo/Hybrid Analysis)
-
-Extended YARA rules library
-
+# Ephemeral | Email Header Analysis Tool
+
+An analyst-grade, ephemeral email header and authentication analysis tool designed for learning, research, and security validation.
+
+## Features
+- **Deep Header Parsing**: Normalizes fields, extracts received chain, message IDs, and more.
+- **Authentication Quality Analysis**: 
+    - Real-time SPF/DMARC record lookups via Cloudflare DNS.
+    - Evaluates policy strength (`-all` vs `~all`).
+    - Detects DNS lookup limit violations.
+    - Checks DKIM alignment and DMARC enforcement levels.
+- **Anomaly Detection**: 
+    - Hop-by-hop timestamp drift detection.
+    - Private IP detection in transit.
+    - Sender alignment checks (From vs Return-Path).
+- **Infrastructure Reputation**:
+    - Optional VirusTotal and AbuseIPDB integration.
+    - Contextual risk labeling.
+- **Modular Modes**: Standalone IP, Domain, and Attachment (metadata-only) analysis.
+- **Privacy First**: 
+    - 100% Client-side analysis.
+    - No data persistence, no logs, no tracking.
+    - Ephemeral execution in memory.
+
+## Architecture
+- **Frontend**: Static HTML5/JS hosted on GitHub Pages.
+- **Backend**: Optional GitHub Actions workflow for batch/recorded analysis execution.
+- **APIs**: VirusTotal, AbuseIPDB, Cloudflare DNS-over-HTTPS.
+
+## Usage
+1. Open `index.html`.
+2. (Optional) Click **Configure APIs** to add your VirusTotal/AbuseIPDB keys. Keys are stored only in your browser's local storage.
+3. Paste raw email headers into the **Full Analysis** tab.
+4. Click **Start Analysis**.
+5. Export results as Markdown or JSON for your report.
+
+## Design Aesthetic
+The UI follows a minimalist black & white theme, prioritizing legibility and analyst workflow efficiency.
+
+---
+*Built for security analysts. No data storage. No persistence.*
