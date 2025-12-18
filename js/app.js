@@ -193,119 +193,163 @@ function updateLoading(msg) {
 }
 
 function displayReport(report, isPartial = false) {
-    document.getElementById('total-score').innerText = report.score;
+    document.getElementById('total-score').innerText = report.riskScore;
     document.getElementById('analyst-summary').innerText = report.summary;
 
     let html = '';
 
-    // Anomaly Section
-    if (report.anomalies.length > 0) {
-        html += `<div class="result-card">
-            <div class="card-header"><span class="card-title">Anomalies Detected</span></div>`;
-        report.anomalies.forEach(a => {
-            html += `<div class="anomaly-item">
-                <span class="anomaly-icon">${a.level === 'Critical' ? '🔴' : a.level === 'High' ? '🟠' : '🟡'}</span>
-                <div>
-                    <strong>${a.level}</strong>: ${a.msg}
-                </div>
-            </div>`;
-        });
-        html += `</div>`;
-    }
+    // --- RENDER MODULES ---
 
-    // Comparison Section
-    if (report.comparison && report.comparison.length > 0) {
-        html += `<div class="result-card">
-            <div class="card-header"><span class="card-title">Comparison Deviations</span></div>`;
-        report.comparison.forEach(dev => {
-            html += `<div class="anomaly-item">
-                <span class="anomaly-icon">⚖️</span>
-                <div>${dev}</div>
-            </div>`;
-        });
-        html += `</div>`;
-    } else if (report.comparison) {
-        html += `<div class="result-card" style="border-color: green;">
-            <div class="card-header"><span class="card-title" style="color: green;">Baseline match</span></div>
-            <p>No structural deviations detected compared to legitimate sample.</p>
-        </div>`;
-    }
-
-    // Infrastructure & Path Section
-    if (report.infrastructure && report.infrastructure.path) {
-        html += `<div class="result-card">
-            <div class="card-header"><span class="card-title">Infrastructure Path Analysis</span></div>`;
-
-        // Path Table
-        html += `<div class="table-responsive"><table>
-            <thead><tr><th>Hop</th><th>IP / Host</th><th>Role</th><th>Status</th></tr></thead>
-            <tbody>`;
-
-        report.infrastructure.path.forEach((hop, i) => {
-            let statusIcon = '🟢'; // Default transit
-            if (hop.role.includes('True Origin')) statusIcon = '🔎';
-            else if (hop.isInternal) statusIcon = '🔒';
-
-            html += `<tr>
-                <td style="color:#666;">${i + 1}</td>
-                <td class="mono">${hop.ip || 'Unknown IP'}<br><span style="font-size:0.7em; color:#888;">${hop.by || ''}</span></td>
-                <td><span class="badge ${hop.role.includes('Origin') ? 'badge-blue' : ''}">${hop.role}</span></td>
-                <td>${statusIcon}</td>
-            </tr>`;
-        });
-        html += `</tbody></table></div>`;
-
-        // Enrichment Details (ASN/Country)
-        if (report.infrastructure.asn !== 'N/A') {
-            html += `<div style="margin-top:15px; padding-top:10px; border-top:1px solid #eee;">
-                <strong>Origin Context:</strong><br>
-                ASN: ${report.infrastructure.asn}<br>
-                ISP: ${report.infrastructure.isp}<br>
-                Country: ${report.infrastructure.country}<br>
-                Risk Assessment: <strong>${report.infrastructure.risk}</strong>
-            </div>`;
-        }
-
-        html += `</div>`;
-    }
-
-    // Other Sections (Auth, etc)
-    if (report.sections && report.sections.length > 0) {
-        report.sections.forEach(sec => {
-            html += `<div class="result-card">
-                <div class="card-header"><span class="card-title">${sec.title}</span></div>
-                <div style="font-size: 0.85rem;">
-                    ${sec.details.map(d => `<div style="margin-bottom: 5px;">${d}</div>`).join('')}
-                </div>
-                ${sec.deduction > 0 ? `<div style="color: grey; font-size: 0.7rem; margin-top: 10px;">Scoring impact: -${sec.deduction} points</div>` : ''}
-            </div>`;
-        });
-    }
-
-    // Header Table Section
+    // 1. Identity & Spoofing
+    const modId = report.modules.identity;
     html += `<div class="result-card">
-        <div class="card-header"><span class="card-title">Captured Headers</span></div>
-        <div class="table-responsive">
+        <div class="card-header"><span class="card-title">1. Identity & Spoofing</span></div>
+        <div style="padding:10px;">
+            ${renderIssues(modId.issues)}
+            <div style="margin-top:10px; display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                <div>
+                    <strong>Authentication:</strong><br>
+                    SPF: ${modId.data.auth?.spf || 'None'} ${modId.data.auth?.spf === 'pass' ? '✅' : '❌'}<br>
+                    DKIM: ${modId.data.auth?.dkim?.join(', ') || 'None'} ${modId.data.auth?.dkim?.includes('pass') ? '✅' : '❌'}<br>
+                    DMARC: ${modId.data.auth?.dmarc || 'None'}
+                </div>
+            </div>
+        </div>
+    </div>`;
+
+    // 2. Infrastructure & Routing (MS Style + Reputation)
+    const modInfra = report.modules.infrastructure;
+    html += `<div class="result-card">
+        <div class="card-header"><span class="card-title">2. Infrastructure & Routing</span></div>
+        <div style="padding:10px;">
+            ${renderIssues(modInfra.issues)}
+            <p><strong>Total Hops:</strong> ${modInfra.data.hops.length}</p>
+            
+            <div class="table-responsive">
+                <table>
+                    <thead><tr><th>Hop</th><th>Delay</th><th>From (Sending)</th><th>By (Receiving)</th><th>IP / Reputation</th></tr></thead>
+                    <tbody>
+                        ${modInfra.data.hops.map(h => {
+        // Highlight origin
+        let ipStyle = '';
+        if (h.role === 'True Origin (First Public)') ipStyle = 'font-weight:bold; color:#0af;';
+
+        return `<tr>
+                            <td>${h.number}</td>
+                            <td>${h.delay ? h.delay + 's' : '-'}</td>
+                            <td class="mono">${h.from || ''}</td>
+                            <td class="mono">${h.by || ''}</td>
+                            <td class="mono" style="${ipStyle}">${h.ip || ''}</td>
+                        </tr>`}).join('')}
+                    </tbody>
+                </table>
+            </div>
+            <div style="margin-top:10px;">
+                 <strong>True Origin IP:</strong> ${modInfra.data.originIp || 'Unknown'}
+            </div>
+        </div>
+    </div>`;
+
+    // 3. Threat Intelligence
+    const modThreat = report.modules.threatIntel;
+    html += `<div class="result-card">
+        <div class="card-header"><span class="card-title">3. Threat Intelligence</span></div>
+        <div style="padding:10px;">
+            ${renderIssues(modThreat.issues)}
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
+                <div>
+                    <strong>Origin IP Reputation:</strong><br>
+                    ${renderReputation(modThreat.data.originReputation)}
+                </div>
+                <div>
+                    <strong>Sender Domain Profile:</strong><br>
+                    ${renderDomainProfile(modThreat.data.senderDomain)}
+                </div>
+            </div>
+        </div>
+    </div>`;
+
+    // 4 & 5. Content & Vendor
+    const modContent = report.modules.content;
+    const modVendor = report.modules.vendor;
+    html += `<div class="result-card">
+        <div class="card-header"><span class="card-title">4. Content & Vendor Specs</span></div>
+        <div style="padding:10px; display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
+            <div>
+                 <strong>Content Metadata:</strong><br>
+                 MIME: ${modContent.data.mime}<br>
+                 Encoding: ${modContent.data.encoding || 'Standard'}<br>
+                 Attachments: ${modContent.data.hasAttachments ? 'Yes 📎' : 'No'}
+            </div>
+            <div>
+                 <strong>Vendor Headers:</strong><br>
+                 Microsoft SCL: ${modVendor.data.microsoft || 'N/A'}<br>
+                 Google DKIM: ${modVendor.data.google || 'N/A'}
+            </div>
+        </div>
+    </div>`;
+
+    // Headers Table
+    html += `<div class="result-card">
+        <div class="card-header"><span class="card-title">Raw Headers</span></div>
+        <div class="table-responsive" style="max-height: 400px; overflow-y:auto;">
             <table>
-                <thead>
-                    <tr><th>Header</th><th>Value</th></tr>
-                </thead>
-                <tbody>`;
+                <thead><tr><th>Header</th><th>Value</th></tr></thead>
+                <tbody>
+                ${Object.keys(report.rawHeaders).map(k => {
+        let val = report.rawHeaders[k];
+        if (Array.isArray(val)) val = val.join('<br>'); // Handle array headers
 
-    const keyHeaders = ['from', 'to', 'subject', 'date', 'return-path', 'message-id', 'x-mailer'];
-    keyHeaders.forEach(key => {
-        if (report.rawHeaders[key]) {
-            html += `<tr><td>${key}</td><td class="mono">${report.rawHeaders[key]}</td></tr>`;
-        }
-    });
+        // Safe truncation for rendering massive headers
+        const displayVal = val.length > 300
+            ? `<div style="max-width:500px; overflow-wrap:anywhere;">${val}</div>`
+            : val;
 
-    html += `</tbody></table></div></div>`;
+        return `<tr><td style="width:150px;">${k}</td><td class="mono">${displayVal}</td></tr>`;
+    }).join('')}
+                </tbody>
+            </table>
+        </div>
+    </div>`;
 
     document.getElementById('sections-wrapper').innerHTML = html;
 
     if (isPartial) {
-        document.getElementById('analyst-summary').innerHTML += ' <br><br><em>...enriching with reputation data (VT/AbuseIPDB)...</em>';
+        document.getElementById('analyst-summary').innerHTML += ' <br><em>...enriching with Threat Intel...</em>';
     }
+}
+
+function renderIssues(issues) {
+    if (!issues || issues.length === 0) return '<div style="color:green; margin-bottom:10px;">✅ No Issues Detected</div>';
+    return issues.map(i => {
+        let color = 'gold';
+        if (i.level === 'Critical') color = 'red';
+        else if (i.level === 'High') color = 'orange';
+        return `<div style="background: rgba(255,255,255,0.05); padding:5px; border-left: 3px solid ${color}; margin-bottom:5px;">
+            <strong>${i.level}:</strong> ${i.msg}
+        </div>`;
+    }).join('');
+}
+
+function renderReputation(rep) {
+    if (!rep) return "Pending...";
+    const vt = rep.vt.data?.malicious;
+    return `
+    ASN: ${rep.asn || 'N/A'}<br>
+    ISP: ${rep.isp || 'N/A'}<br>
+    Country: ${rep.country || 'N/A'}<br>
+    VirusTotal: ${vt !== undefined ? (vt > 0 ? `🔴 ${vt} Detections` : '🟢 Clean') : 'N/A'}
+    `;
+}
+
+function renderDomainProfile(prof) {
+    if (!prof) return "Pending...";
+    return `
+    Domain: ${prof.domain}<br>
+    Age: ${prof.ageDays !== null ? prof.ageDays + ' days' : 'Unknown'}<br>
+    MX Records: ${prof.dns.mx.length}<br>
+    VirusTotal: ${prof.reputation?.vt?.data?.malicious > 0 ? '🔴 Malicious' : '🟢 Clean'}
+    `;
 }
 
 function displayStandaloneResults(title, results) {
@@ -369,7 +413,7 @@ function displayStandaloneResults(title, results) {
                 </div>
             </div>
             <div style="margin-top:10px; border-top:1px solid #eee; padding-top:5px; font-size:0.8rem; color:#666;">
-                <strong>Authentciation & DNS Detail:</strong><br>
+                <strong>Authentication & DNS Detail:</strong><br>
                 MX: ${data.dns.mx.map(m => m.split(' ').pop()).join(', ') || 'None'}<br>
                 TXT/SPF: ${data.dns.spf || 'None'}<br>
                 DMARC: ${data.dns.dmarc || 'None'}
