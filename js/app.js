@@ -231,7 +231,7 @@ function displayReport(report, isPartial = false) {
             ${publicHops.length === 0 ? 'No public IPs analyzing yet...' :
             `<div class="table-responsive">
                 <table>
-                    <thead><tr><th>IP Address</th><th>ISP / Org</th><th>Risk Score</th><th>Status</th></tr></thead>
+                    <thead><tr><th>IP Address</th><th>ISP / Org</th><th>Risk Score</th><th>Status / Actions</th></tr></thead>
                     <tbody>
                         ${publicHops.map(h => {
                 let statusIcon = '⚪';
@@ -242,13 +242,25 @@ function displayReport(report, isPartial = false) {
 
                 // Handle Fallback / Manual
                 let statusText = h.reputation.status;
-                if (h.reputation.status === 'Gray') statusText = 'Unknown (Manual Check)';
+                let actions = '';
+
+                if (h.reputation.status === 'Gray') {
+                    statusText = 'UNVERIFIED';
+                    color = '#7f8c8d';
+                    actions = `<div style="display:flex; gap:5px; margin-top:5px;">
+                                    <a href="https://www.abuseipdb.com/check/${h.ip}" target="_blank" class="fallback-link">🛡️ Abuse</a>
+                                    <a href="https://talosintelligence.com/reputation_center/lookup?search=${h.ip}" target="_blank" class="fallback-link">🦅 Talos</a>
+                                 </div>`;
+                }
 
                 return `<tr>
                                 <td class="mono">${h.ip}</td>
                                 <td>${h.reputation.isp || 'Unknown'}</td>
                                 <td>${h.reputation.score}/100</td>
-                                <td style="color:${color}; font-weight:bold;">${statusIcon} ${statusText}</td>
+                                <td style="color:${color}; font-weight:bold;">
+                                    ${statusIcon} ${statusText}
+                                    ${actions}
+                                </td>
                             </tr>`;
             }).join('')}
                     </tbody>
@@ -263,6 +275,18 @@ function displayReport(report, isPartial = false) {
         let ageRisk = 'Green';
         if (dom.risk && dom.risk.level === 'Red') ageRisk = 'Red';
         else if (dom.risk && dom.risk.level === 'Yellow') ageRisk = 'Yellow'; // Normalize
+
+        // Fallback for Domain
+        let domainFallback = '';
+        if (dom.risk && dom.risk.level === 'Gray') {
+            domainFallback = `<div style="margin-top:10px; padding:10px; background:rgba(255,255,255,0.05); border-left:3px solid #7f8c8d;">
+                <strong>⚠️ UNVERIFIED DOMAIN:</strong> Check Manually:
+                <div style="margin-top:5px; display:flex; gap:10px;">
+                    <a href="https://mxtoolbox.com/SuperTool.aspx?action=mx:${dom.domain}" target="_blank" class="fallback-link">🔧 MXToolbox</a>
+                    <a href="https://talosintelligence.com/reputation_center/lookup?search=${dom.domain}" target="_blank" class="fallback-link">🦅 Talos</a>
+                </div>
+             </div>`;
+        }
 
         html += `<div class="result-card">
             <div class="card-header"><span class="card-title">3. Domain Health (${dom.domain})</span></div>
@@ -281,6 +305,7 @@ function displayReport(report, isPartial = false) {
                 </div>
             </div>
              ${dom.risk && dom.risk.flags.length > 0 ? `<div style="margin-top:10px; padding:10px; background:rgba(255,0,0,0.1);"><strong>⚠️ Flags:</strong> ${dom.risk.flags.join(', ')}</div>` : ''}
+             ${domainFallback}
         </div>`;
     }
 
@@ -339,19 +364,37 @@ function displayStandaloneResults(title, results) {
         else if (risk.level === 'Gray') {
             riskColor = '#7f8c8d';
             riskIcon = '⚪';
-            riskText = 'UNKNOWN (MANUAL CHECK)';
+            riskText = 'UNVERIFIED';
         }
 
         html += `<div class="result-card" style="border-left: 5px solid ${riskColor};">
             <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
                 <span class="card-title" style="font-size:1.2em;">${res.value}</span>
-                <span class="badge" style="background:${riskColor}; color:white;">${riskIcon} ${riskText} RISK</span>
+                <span class="badge" style="background:${riskColor}; color:white;">${riskIcon} ${riskText}</span>
             </div>
             
             <div style="padding:0 15px 15px 15px;">`;
 
-        // Render Flags if any
-        if (risk.flags && risk.flags.length > 0) {
+        // Render Flags or Fallback Links
+        if (risk.level === 'Gray') {
+            // FALLBACK: Manual Verification Links
+            const val = res.value;
+            html += `<div style="margin: 10px 0; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 4px;">
+                <strong style="color:#eebb00;">⚠️ API Data Unavailable. Verify Manually:</strong>
+                <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
+                    ${res.type === 'IP' ? `
+                        <a href="https://www.abuseipdb.com/check/${val}" target="_blank" class="fallback-btn">🛡️ AbuseIPDB</a>
+                        <a href="https://talosintelligence.com/reputation_center/lookup?search=${val}" target="_blank" class="fallback-btn">🦅 Talos</a>
+                        <a href="https://www.spamhaus.org/query/ip/${val}" target="_blank" class="fallback-btn">🛑 Spamhaus</a>
+                        <a href="https://www.shodan.io/host/${val}" target="_blank" class="fallback-btn">📡 Shodan</a>
+                    ` : `
+                        <a href="https://mxtoolbox.com/SuperTool.aspx?action=mx:${val}" target="_blank" class="fallback-btn">🔧 MXToolbox</a>
+                        <a href="https://talosintelligence.com/reputation_center/lookup?search=${val}" target="_blank" class="fallback-btn">🦅 Talos</a>
+                        <a href="https://urlscan.io/search/#${val}" target="_blank" class="fallback-btn">📸 UrlScan</a>
+                    `}
+                </div>
+            </div>`;
+        } else if (risk.flags && risk.flags.length > 0) {
             html += `<div style="margin: 10px 0; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 4px;">
                 <strong>⚠️ Detection Flags:</strong>
                 <ul style="margin: 5px 0 0 20px; padding:0; color:${riskColor === 'red' ? '#ff6b6b' : '#feca57'};">
