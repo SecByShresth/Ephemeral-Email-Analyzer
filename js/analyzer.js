@@ -91,9 +91,6 @@ class Analyzer {
         report.modules.infrastructure.data.hops = hops.map((hop, i) => {
             let delay = 0;
             if (hop.date && previousDate) {
-                // Hops are in reverse order (Earliest first), but date comparison depends on order
-                // Actually hops[0] is Origin (oldest). hops[last] is Recipient (newest).
-                // So delay = current - previous
                 delay = this._calcDelay(hop.date, previousDate);
             }
             if (i > 0) previousDate = hop.date;
@@ -225,28 +222,179 @@ class Analyzer {
         return "CLEAN: Email passed aligned authentication and reputation checks.";
     }
 
+    // --- DETAILED FORENSIC MODULES ---
+
+    // 1. IP Analysis (Forensic 360)
     async analyzeIPs(ips) {
-        // Keep standalone format for now
         const results = [];
         for (const ip of ips) {
             if (!ip.trim()) continue;
-            const rep = await this.reputation.checkIP(ip.trim());
-            let risk = 'Neutral';
-            if (rep.vt.data?.malicious > 0) risk = 'High';
-            results.push({ type: 'IP', value: ip, data: rep, risk: risk });
+
+            // 1. Parallel Lookups
+            const [ptrRes, rep] = await Promise.all([
+                this._lookupPTR(ip.trim()),
+                this.reputation.checkIP(ip.trim())
+            ]);
+
+            // 2. Synthesize Data
+            const analysis = {
+                type: 'IP',
+                value: ip.trim(),
+                identity: {
+                    version: ip.includes(':') ? 'IPv6' : 'IPv4',
+                    isp: rep.isp || 'Unknown',
+                    asn: rep.asn || 'Unknown',
+                    ptr: ptrRes || 'No PTR Record'
+                },
+                geo: {
+                    country: rep.country || 'Unknown',
+                    usage: rep.abuse.data?.usageType || 'Unknown' // e.g. Data Center, Residential
+                },
+                risk: {
+                    score: 0,
+                    level: 'Green', // Green, Yellow, Red
+                    flags: [],
+                    blacklist: rep.vt.data?.malicious > 0 ? `Listed on ${rep.vt.data.malicious} blocklists` : 'Clean',
+                    abuseScore: rep.abuse.data?.score || 0
+                }
+            };
+
+            // 3. Risk Logic (Traffic Light)
+            // Baseline deduction
+            if (analysis.risk.abuseScore > 0) analysis.risk.score += analysis.risk.abuseScore;
+            if (rep.vt.data?.malicious > 0) analysis.risk.score += (rep.vt.data.malicious * 10);
+
+            // Usage Type Analysis
+            const usage = (analysis.geo.usage || '').toLowerCase();
+            if (usage.includes('business') || usage.includes('data center')) {
+                analysis.risk.flags.push('Data Center/Business IP (Potential Bot/VPN)');
+                analysis.risk.score += 20;
+            } else if (usage.includes('residential')) {
+                analysis.risk.flags.push('Residential IP (Likely User Device)');
+            }
+
+            // Thresholds
+            if (analysis.risk.score >= 50 || rep.vt.data?.malicious > 0) {
+                analysis.risk.level = 'Red';
+            } else if (analysis.risk.score >= 20 || usage.includes('vpn')) {
+                analysis.risk.level = 'Yellow';
+            }
+
+            analysis.data = rep; // Keep raw data
+            results.push(analysis);
         }
         return results;
     }
 
+    // 2. Domain Analysis (Identity & Trust)
     async analyzeDomains(domains) {
         const results = [];
+        const protectedBrands = ['google', 'microsoft', 'paypal', 'apple', 'amazon', 'facebook', 'netflix', 'bank'];
+
         for (const d of domains) {
             if (!d.trim()) continue;
+
+            // 1. Recon
             const profile = await this._getDomainProfile(d.trim());
-            let risk = 'Neutral';
-            if (profile.reputation?.vt?.data?.malicious > 0) risk = 'High';
-            results.push({ type: 'Domain', value: d, data: profile, risk: risk });
+
+            // Additional recon for standalone mode
+            const [ns, aaaa, dmarc] = await Promise.all([
+                this.lookupDNS(d.trim(), 'NS'),
+                this.lookupDNS(d.trim(), 'AAAA'),
+                this.lookupDNS(`_dmarc.${d.trim()}`, 'TXT')
+            ]);
+
+            profile.dns.ns = ns?.Answer?.map(x => x.data) || [];
+            profile.dns.aaaa = aaaa?.Answer?.map(x => x.data) || [];
+            if (dmarc?.Answer) profile.dns.dmarc = dmarc.Answer.map(x => x.data).join(' ');
+
+            // 2. Analysis Construction
+            const analysis = {
+                type: 'Domain',
+                value: d.trim(),
+                identity: {
+                    registrar: profile.reputation.vt.data?.registrar || 'Unknown',
+                    ageDays: profile.ageDays,
+                    created: profile.reputation.vt.data?.creation_date ? new Date(profile.reputation.vt.data.creation_date * 1000).toLocaleDateString() : 'Unknown'
+                },
+                dns: profile.dns,
+                risk: {
+                    level: 'Green',
+                    flags: [],
+                    typosquat: false
+                },
+                content: {
+                    category: profile.reputation.vt.data?.categories ? Object.values(profile.reputation.vt.data.categories)[0] : 'Uncategorized'
+                }
+            };
+
+            // 3. Risk Logic
+            // Age
+            if (analysis.identity.ageDays !== null) {
+                if (analysis.identity.ageDays < 7) {
+                    analysis.risk.level = 'Red';
+                    analysis.risk.flags.push(`New Domain (< 7 days): ${analysis.identity.ageDays} days old`);
+                } else if (analysis.identity.ageDays < 30) {
+                    if (analysis.risk.level !== 'Red') analysis.risk.level = 'Yellow';
+                    analysis.risk.flags.push(`Young Domain (< 30 days)`);
+                }
+            } else {
+                analysis.risk.flags.push('Age Unknown (Caution)');
+            }
+
+            // Auth
+            if (!analysis.dns.mx.length) {
+                analysis.risk.flags.push('No MX Records (Cannot receive email)');
+                if (analysis.risk.level !== 'Red') analysis.risk.level = 'Yellow';
+            }
+            if (!analysis.dns.dmarc) {
+                analysis.risk.flags.push('Missing DMARC Policy');
+                if (analysis.risk.level !== 'Red') analysis.risk.level = 'Yellow';
+            }
+
+            // Typosquatting
+            const domainBase = d.split('.')[0].toLowerCase();
+            protectedBrands.forEach(brand => {
+                if (domainBase !== brand && (domainBase.includes(brand) || this._isFuzzyMatch(domainBase, brand))) {
+                    analysis.risk.typosquat = true;
+                    analysis.risk.flags.push(`Possible Typosquatting of '${brand}'`);
+                    analysis.risk.level = 'Red';
+                }
+            });
+
+            // Rep
+            if (profile.reputation.vt.data?.malicious > 0) {
+                analysis.risk.level = 'Red';
+                analysis.risk.flags.push(`Flagged by ${profile.reputation.vt.data.malicious} vendors`);
+            }
+
+            if (analysis.content.category === 'Uncategorized') {
+                analysis.risk.flags.push('Uncategorized Content');
+                if (analysis.risk.level === 'Green') analysis.risk.level = 'Yellow';
+            }
+
+            analysis.data = profile;
+            results.push(analysis);
         }
         return results;
+    }
+
+    async _lookupPTR(ip) {
+        try {
+            // Reverse IP: 1.2.3.4 -> 4.3.2.1.in-addr.arpa
+            const parts = ip.split('.');
+            if (parts.length === 4) { // IPv4
+                const reversed = parts.reverse().join('.') + '.in-addr.arpa';
+                const res = await this.lookupDNS(reversed, 'PTR');
+                return res?.Answer?.[0]?.data || null;
+            }
+            return null; // IPv6 TODO
+        } catch { return null; }
+    }
+
+    _isFuzzyMatch(s1, s2) {
+        const norm1 = s1.replace(/0/g, 'o').replace(/1/g, 'l');
+        const norm2 = s2.replace(/0/g, 'o').replace(/1/g, 'l');
+        return norm1 === norm2;
     }
 }
