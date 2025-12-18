@@ -54,10 +54,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const compareRaw = document.getElementById('compare-header-input').value;
         const compareHeaders = compareRaw ? EmailParser.parseHeaders(compareRaw) : null;
 
-        showLoading();
+        showLoading('Parsing Headers & Analyzing Authentication...');
         const headers = EmailParser.parseHeaders(raw);
-        currentReport = await analyzer.analyzeFull(headers, compareHeaders);
-        displayReport(currentReport);
+
+        // Stage 1: Static
+        try {
+            currentReport = await analyzer.analyzeStatic(headers, compareHeaders);
+            updateLoading('Querying Reputation APIs (VT/AbuseIPDB)...');
+            displayReport(currentReport, true); // Partial display
+
+            // Stage 2: Enrichment
+            currentReport = await analyzer.enrichReport(currentReport);
+            updateLoading('Analysis Complete.');
+            displayReport(currentReport, false); // Final display
+        } catch (e) {
+            console.error(e);
+            alert('Analysis failed: ' + e.message);
+            document.getElementById('results-container').style.display = 'none';
+        }
     });
 
     // Analyze Attach
@@ -137,28 +151,48 @@ async function analyzeFile(file) {
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
-    // In a real app, query VT with this hash
     const rep = await reputation.checkHash(hashHex);
+
+    let risk = "Neutral";
+    let details = "No reputation data";
+
+    if (rep.status === 'analyzed') {
+        const malicious = rep.data.malicious;
+        if (malicious > 0) {
+            risk = "High";
+            details = `Flagged by ${malicious} vendors on VirusTotal`;
+        } else {
+            details = "Hash known to VT, no malicious flags";
+        }
+    } else if (rep.status === 'no_key') {
+        risk = "Unknown (No API Key)";
+        details = "Reputation check skipped";
+    }
 
     return {
         filename: file.name,
         size: (file.size / 1024).toFixed(2) + ' KB',
         type: file.type || 'unknown',
         hash: hashHex,
-        reputation: rep || { malicious: 0, suspicious: 0 },
-        risk: (rep && rep.malicious > 0) ? 'High' : 'Low'
+        reputation: rep.data,
+        risk: risk,
+        details: `${details}<br><span style="font-size:0.7em">SHA256: ${hashHex.substring(0, 16)}...</span>`
     };
 }
 
-function showLoading() {
+function showLoading(msg = 'Running deep analysis...') {
     const container = document.getElementById('results-container');
     container.style.display = 'block';
     document.getElementById('total-score').innerText = '--';
-    document.getElementById('analyst-summary').innerText = 'Running deep analysis...';
+    document.getElementById('analyst-summary').innerText = msg;
     document.getElementById('sections-wrapper').innerHTML = '';
 }
 
-function displayReport(report) {
+function updateLoading(msg) {
+    document.getElementById('analyst-summary').innerText = msg;
+}
+
+function displayReport(report, isPartial = false) {
     document.getElementById('total-score').innerText = report.score;
     document.getElementById('analyst-summary').innerText = report.summary;
 
@@ -230,6 +264,10 @@ function displayReport(report) {
     html += `</tbody></table></div></div>`;
 
     document.getElementById('sections-wrapper').innerHTML = html;
+
+    if (isPartial) {
+        document.getElementById('analyst-summary').innerHTML += ' <br><br><em>...enriching with reputation data (VT/AbuseIPDB)...</em>';
+    }
 }
 
 function displayStandaloneResults(title, results) {
@@ -240,20 +278,29 @@ function displayStandaloneResults(title, results) {
         <div class="card-header"><span class="card-title">${title} Results</span></div>
         <div class="table-responsive">
             <table>
-                <thead><tr><th>Subject</th><th>Reputation / Risk</th><th>Details</th></tr></thead>
+                <thead><tr><th>Target</th><th>Risk Assessment</th><th>Context / Reputation</th></tr></thead>
                 <tbody>`;
 
     results.forEach(res => {
         const item = res.ip || res.domain || res.filename;
-        const riskClass = res.risk === 'High' ? '🔴' : '🟢';
-        let details = res.reputation.asn || res.reputation.isp || 'N/A';
-        if (res.hash) {
-            details = `SHA256: ${res.hash.substring(0, 16)}...<br>Size: ${res.size}`;
+        let riskIcon = '⚪';
+        if (res.risk === 'High') riskIcon = '🔴';
+        else if (res.risk === 'Medium') riskIcon = '🟠';
+        else if (res.risk === 'Low') riskIcon = '🟢';
+
+        let context = res.details || '';
+
+        // If not pre-calculated, derive it (legacy fallback)
+        if (!context) {
+            if (res.reputation) {
+                context = res.reputation.asn || res.reputation.registrar || 'No context available';
+            }
         }
+
         html += `<tr>
-            <td class="mono">${item}</td>
-            <td>${riskClass} ${res.risk} Risk</td>
-            <td>${details}</td>
+            <td class="mono"><strong>${item}</strong></td>
+            <td>${riskIcon} ${res.risk}</td>
+            <td>${context}</td>
         </tr>`;
     });
 
